@@ -1,6 +1,5 @@
 import axios from 'axios';
 import { env } from '../config/env';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuthStore } from '../store/authStore';
 
 const api = axios.create({
@@ -10,18 +9,38 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
-
 // Request interceptor to attach token
+console.log('[API CONFIG] API_URL:', env.API_URL);
 api.interceptors.request.use(
   async (config) => {
     try {
       const token = useAuthStore.getState().token;
+
+      console.log('[AUTH DEBUG] ===== PROTECTED REQUEST =====');
+      console.log('[AUTH DEBUG] endpoint:', config.url);
+      console.log('[AUTH DEBUG] hasToken:', !!token);
+      // Classify token type for debug — never print the token itself
+      const tokenType = !token ? 'NONE' : token === 'mock-token' ? 'MOCK_TOKEN' : 'REAL_ACCESS_TOKEN';
+      console.log('[AUTH DEBUG] tokenType:', tokenType);
+
+      // Legacy verbose logs kept for continuity
+      console.log('[API] ===== REQUEST =====');
+      console.log('[API] Method:', config.method);
+      console.log('[API] Base URL:', config.baseURL);
+      console.log('[API] URL:', config.url);
+      console.log(
+        '[API] Full URL:',
+        `${config.baseURL || ''}${config.url || ''}`
+      );
+      console.log('[API] Has auth token:', !!token);
+
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
     } catch (error) {
       console.error('Error fetching token from storage', error);
     }
+
     return config;
   },
   (error) => {
@@ -38,11 +57,11 @@ api.interceptors.response.use(
       error.message = 'The server is taking longer than usual to respond. It might be waking up, please try again.';
     } else if (error.response?.status === 401) {
       const originalRequest = error.config;
-      
+
       // Don't trigger refresh loop if the 401 is from auth endpoints
       const url = originalRequest?.url || '';
       if (!url.includes('/auth/login') && !url.includes('/auth/register') && !url.includes('/auth/logout') && !url.includes('/auth/refresh') && !originalRequest._retry) {
-        
+
         originalRequest._retry = true;
         const { refreshToken, sessionId, logout } = useAuthStore.getState();
 
@@ -59,7 +78,7 @@ api.interceptors.response.use(
               const newAccessToken = refreshResponse.data.data.accessToken;
               // Update state
               useAuthStore.setState({ token: newAccessToken });
-              
+
               // Retry original request
               originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
               return api(originalRequest);
@@ -70,15 +89,17 @@ api.interceptors.response.use(
             return Promise.reject(refreshError);
           }
         }
-        
+
         // If we reach here, we had no refresh token, or the refresh failed
         const currentToken = useAuthStore.getState().token;
-        if (currentToken === 'mock-token') {
-          console.warn('API 401 Unauthorized on:', url, '-> Ignoring because we are using a mock token for OTP testing.');
-        } else {
-          console.warn('API 401 Unauthorized on:', url, '-> Forcing logout');
-          logout();
-        }
+        const tokenType = !currentToken ? 'NONE' : 'REAL_ACCESS_TOKEN';
+        console.log('[AUTH DEBUG] ===== AUTHORIZATION FAILURE =====');
+        console.log('[AUTH DEBUG] endpoint:', url);
+        console.log('[AUTH DEBUG] status: 401');
+        console.log('[AUTH DEBUG] tokenExists:', !!currentToken);
+        console.log('[AUTH DEBUG] tokenType:', tokenType);
+        console.log('[AUTH DEBUG] action: LOGOUT');
+        logout();
       }
     }
     return Promise.reject(error);

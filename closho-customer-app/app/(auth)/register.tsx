@@ -1,21 +1,39 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Animated, Image } from 'react-native';
-import { Link, useRouter } from 'expo-router';
-import { Input } from '../../src/components/ui/Input';
-import { Button } from '../../src/components/ui/Button';
-import { colors } from '../../src/theme/colors';
-import { typography } from '../../src/theme/typography';
-import { spacing } from '../../src/theme/spacing';
-import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
+import { useRouter } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { Controller, useForm } from 'react-hook-form';
+import { Animated, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { z } from 'zod';
+import { Button } from '../../src/components/ui/Button';
+import { Input } from '../../src/components/ui/Input';
+import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
+import { colors } from '../../src/theme/colors';
+import { spacing } from '../../src/theme/spacing';
+import { typography } from '../../src/theme/typography';
 
-GoogleSignin.configure({
-  webClientId: '60006579315-8iiipi2gjk92mn4j4n5ke1r1bmt8lhs8.apps.googleusercontent.com',
-});
+try {
+  if (GoogleSignin && typeof GoogleSignin.configure === 'function') {
+    //temp code
+    console.log(
+      '[GoogleSignIn] Web Client ID exists:',
+      !!process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID
+    );
+
+    console.log(
+      '[GoogleSignIn] Web Client ID suffix:',
+      process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.slice(-25)
+    );
+
+    //upto here
+    GoogleSignin.configure({
+      webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+    });
+  }
+} catch (e) {
+  console.log('[GoogleSignin] Not supported in Expo Go environment');
+}
 
 const registerSchema = z.object({
   fullName: z.string().min(2, 'Full name is required'),
@@ -50,10 +68,13 @@ export default function RegisterScreen() {
   });
 
   const onSubmit = async (data: RegisterForm) => {
+    console.log('[Register Screen Debug] Form submitted with:', { fullName: data.fullName, email: data.email });
     setIsLoading(true);
     const result = await useAuthStore.getState().register(data.fullName, data.email, data.password);
     setIsLoading(false);
-    
+
+    console.log('[Register Screen Debug] Result from authStore.register:', result);
+
     if (result.success) {
       showSnackbar('Registration successful! Please login.', 'success');
       router.push('/(auth)/login');
@@ -64,6 +85,10 @@ export default function RegisterScreen() {
 
   const handleGoogleLogin = async () => {
     try {
+      if (!GoogleSignin || typeof GoogleSignin.hasPlayServices !== 'function') {
+        showSnackbar('Google Sign In requires a custom development build (not available in standard Expo Go).', 'info');
+        return;
+      }
       await GoogleSignin.hasPlayServices();
       const response = await GoogleSignin.signIn();
       const idToken = response.data?.idToken;
@@ -72,7 +97,7 @@ export default function RegisterScreen() {
         setIsLoading(true);
         const result = await useAuthStore.getState().googleLogin(idToken);
         setIsLoading(false);
-        
+
         if (result.success) {
           router.replace('/(tabs)/reels');
           showSnackbar('Successfully logged in with Google!', 'success');
@@ -96,8 +121,8 @@ export default function RegisterScreen() {
   };
 
   return (
-    <KeyboardAvoidingView 
-      style={styles.container} 
+    <KeyboardAvoidingView
+      style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -156,10 +181,10 @@ export default function RegisterScreen() {
             )}
           />
 
-          <Button 
-            title="Register" 
-            onPress={handleSubmit(onSubmit)} 
-            isLoading={isLoading} 
+          <Button
+            title="Register"
+            onPress={handleSubmit(onSubmit)}
+            isLoading={isLoading}
             style={styles.registerBtn}
           />
 
@@ -169,9 +194,9 @@ export default function RegisterScreen() {
             <View style={styles.divider} />
           </View>
 
-          <Button 
-            title="Continue with Google" 
-            variant="secondary" 
+          <Button
+            title="Continue with Google"
+            variant="secondary"
             style={{ marginBottom: spacing.md }}
             onPress={handleGoogleLogin}
             disabled={isLoading}
@@ -184,9 +209,9 @@ export default function RegisterScreen() {
 
           <View style={styles.footer}>
             <Text style={styles.footerText}>Already have an account? </Text>
-            <Button 
-              variant="text" 
-              title="Sign In" 
+            <Button
+              variant="text"
+              title="Sign In"
               onPress={() => router.push('/(auth)/login')}
             />
           </View>

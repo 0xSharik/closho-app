@@ -1,7 +1,7 @@
-import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { User, AuthState } from '../types/auth.types';
+import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import { AuthState, User } from '../types/auth.types';
 
 interface AuthStore extends AuthState {
   setAuth: (user: User, token: string) => Promise<void>;
@@ -58,7 +58,7 @@ export const useAuthStore = create<AuthStore>()(
       sessionId: null,
       sessions: [],
       isAuthenticated: false,
-      isLoading: false, 
+      isLoading: false,
       error: null,
 
       setAuth: async (user: User, token: string) => {
@@ -72,13 +72,25 @@ export const useAuthStore = create<AuthStore>()(
 
       login: async (emailOrPhone: string, password: string) => {
         set({ isLoading: true, error: null });
+        console.log('[AUTH DEBUG] ===== NORMAL LOGIN START =====');
+        console.log('[AUTH DEBUG] endpoint: /auth/login');
         try {
           // Import here to avoid circular dependencies if needed, or import at top
           const api = require('../services/api').default;
           const response = await api.post('/auth/login', { email: emailOrPhone, password });
+          console.log('[AUTH DEBUG] LOGIN RESPONSE');
+          console.log('[AUTH DEBUG] status:', response.status);
+          console.log('[AUTH DEBUG] success:', response.data?.success);
+          console.log('[AUTH DEBUG] hasAccessToken:', !!(response.data?.data?.accessToken));
+          console.log('[AUTH DEBUG] hasUser:', !!(response.data?.data?.user));
           if (response.data.success) {
             const { user, accessToken, refreshToken, sessionId } = response.data.data;
             set({ user, token: accessToken, refreshToken, sessionId, isAuthenticated: true, error: null, isLoading: false });
+            console.log('[AUTH DEBUG] LOGIN SESSION CREATED');
+            console.log('[AUTH DEBUG] tokenExists:', !!accessToken);
+            console.log('[AUTH DEBUG] tokenLength:', accessToken?.length ?? 0);
+            console.log('[AUTH DEBUG] userExists:', !!user);
+            console.log('[AUTH DEBUG] isAuthenticated: true');
             return { success: true };
           } else {
             set({ error: response.data.message || 'Login failed', isLoading: false });
@@ -116,37 +128,60 @@ export const useAuthStore = create<AuthStore>()(
 
       sendOtp: async (phone: string) => {
         set({ isLoading: true, error: null });
+        console.log('[AUTH DEBUG] ===== SEND OTP START =====');
+        console.log('[AUTH DEBUG] phoneProvided:', !!phone);
+        console.log('[AUTH DEBUG] endpoint: /auth/send-verification-otp');
+        console.log('[AUTH DEBUG] purpose: phone_verification');
         try {
           const api = require('../services/api').default;
 
           // Step 1: Try sending verification OTP for phone
           try {
             const response = await api.post('/auth/send-verification-otp', { phone });
+            console.log('[AUTH DEBUG] SEND OTP RESPONSE');
+            console.log('[AUTH DEBUG] status:', response.status);
+            console.log('[AUTH DEBUG] success:', response.data?.success);
+            console.log('[AUTH DEBUG] responseKeys:', Object.keys(response.data || {}));
             if (response.data?.success) {
               set({ isLoading: false });
               return { success: true };
             }
           } catch (sendErr: any) {
-            console.log('[OTP] send-verification-otp failed, trying forgot-password');
+            const errStatus = sendErr.response?.status;
+            console.log('[AUTH DEBUG] SEND OTP RESPONSE');
+            console.log('[AUTH DEBUG] status:', errStatus);
+            console.log('[AUTH DEBUG] success: false');
+            if (errStatus === 409) {
+              console.log('[AUTH DEBUG] SEND OTP RESULT: PHONE_ALREADY_VERIFIED');
+              console.log('[AUTH DEBUG] switchingToPasswordResetFlow: true');
+            }
+            console.log('[AUTH DEBUG] ===== PASSWORD RESET OTP START =====');
+            console.log('[AUTH DEBUG] endpoint: /auth/forgot-password');
           }
 
           // Step 2: Fallback to forgot-password OTP
           try {
             const response = await api.post('/auth/forgot-password', { phone });
+            console.log('[AUTH DEBUG] PASSWORD RESET OTP RESPONSE');
+            console.log('[AUTH DEBUG] status:', response.status);
+            console.log('[AUTH DEBUG] success:', response.data?.success);
+            console.log('[AUTH DEBUG] responseKeys:', Object.keys(response.data || {}));
             if (response.data?.success) {
               set({ isLoading: false });
               return { success: true };
             }
           } catch (forgotErr: any) {
-            console.log('[OTP] forgot-password failed');
+            console.log('[AUTH DEBUG] PASSWORD RESET OTP RESPONSE');
+            console.log('[AUTH DEBUG] status:', forgotErr.response?.status);
+            console.log('[AUTH DEBUG] success: false');
           }
 
           // If backend SMS service returns 500 or is unconfigured, proceed gracefully to OTP entry
-          console.warn('[OTP] Backend SMS gateway returned error/500. Enabling seamless OTP entry.');
+          console.warn('[AUTH DEBUG] Both backend OTP endpoints failed. Enabling fallback OTP entry.');
           set({ isLoading: false, error: null });
           return { success: true };
         } catch (error: any) {
-          console.warn('Send OTP error', error.message || error);
+          console.warn('[AUTH DEBUG] Send OTP outer error:', error.message || error);
           set({ isLoading: false, error: null });
           return { success: true };
         }
@@ -154,14 +189,29 @@ export const useAuthStore = create<AuthStore>()(
 
       verifyOtp: async (phone: string, otp: string) => {
         set({ isLoading: true, error: null });
+        console.log('[AUTH DEBUG] ===== VERIFY OTP START =====');
+        console.log('[AUTH DEBUG] otpProvided:', !!otp);
         try {
           const api = require('../services/api').default;
 
           // Helper to extract and store auth data from backend response
-          const handleAuthResponse = async (resData: any) => {
+          // Returns: { success: true } for login, { success: true, resetToken } for password_reset,
+          //          or null if response does not match either shape.
+          const handleAuthResponse = async (resData: any, purpose: string) => {
             const data = resData.data || resData;
             const accessToken = data.accessToken || data.token || resData.token;
+            const resetToken = data.resetToken;
+
+            console.log('[AUTH DEBUG] ===== CLASSIFY AUTH RESPONSE =====');
+            console.log('[AUTH DEBUG] purpose:', purpose);
+            console.log('[AUTH DEBUG] dataKeys:', Object.keys(data || {}));
+            console.log('[AUTH DEBUG] hasAccessToken:', !!accessToken);
+            console.log('[AUTH DEBUG] hasResetToken:', !!resetToken);
+            console.log('[AUTH DEBUG] isAuthenticatedBefore:', get().isAuthenticated);
+
             if (accessToken) {
+              console.log('[AUTH DEBUG] responseType: LOGIN');
+              console.log('[AUTH DEBUG] action: STORE_ACCESS_TOKEN');
               const refreshToken = data.refreshToken || resData.refreshToken || null;
               const sessionId = data.sessionId || resData.sessionId || null;
               const user = data.user || {
@@ -170,81 +220,108 @@ export const useAuthStore = create<AuthStore>()(
                 phone: phone,
                 role: 'customer'
               };
-              set({ 
-                user, 
-                token: accessToken, 
-                refreshToken, 
-                sessionId, 
-                isAuthenticated: true, 
-                error: null, 
-                isLoading: false 
+              set({
+                user,
+                token: accessToken,
+                refreshToken,
+                sessionId,
+                isAuthenticated: true,
+                error: null,
+                isLoading: false
               });
+              console.log('[AUTH DEBUG] ===== ACCESS TOKEN STORAGE =====');
+              console.log('[AUTH DEBUG] tokenExists: true');
+              console.log('[AUTH DEBUG] tokenLength:', accessToken.length);
+              console.log('[AUTH DEBUG] tokenStored: true');
+              console.log('[AUTH DEBUG] isAuthenticated: true');
               try {
                 const profileRes = await api.get('/auth/me');
                 if (profileRes.data?.data) {
                   set({ user: profileRes.data.data });
                 }
-              } catch (_) {}
+              } catch (_) { }
               return { success: true };
             }
+
+            if (resetToken) {
+              // Password reset flow: do NOT authenticate the user.
+              // Return the resetToken to the UI for navigation to reset-password screen.
+              console.log('[AUTH DEBUG] responseType: PASSWORD_RESET');
+              console.log('[AUTH DEBUG] action: RETURN_RESET_TOKEN');
+              console.log('[AUTH DEBUG] ===== RESET TOKEN HANDOFF =====');
+              console.log('[AUTH DEBUG] resetTokenExists: true');
+              console.log('[AUTH DEBUG] resetTokenLength:', resetToken.length);
+              console.log('[AUTH DEBUG] storedAsAccessToken: false');
+              console.log('[AUTH DEBUG] isAuthenticated: false');
+              console.log('[AUTH DEBUG] action: NAVIGATE_TO_RESET_PASSWORD');
+              set({ isLoading: false });
+              return { success: true, resetToken };
+            }
+
+            // Response had success:true but neither accessToken nor resetToken — unexpected shape.
+            console.warn('[AUTH DEBUG] CLASSIFY AUTH RESPONSE: unrecognised response shape, no token found.');
             return null;
           };
 
-          // Try verifying as phone_verification first
+          // Attempt 1: phone_verification purpose
+          console.log('[AUTH DEBUG] purpose: phone_verification');
+          console.log('[AUTH DEBUG] endpoint: /auth/verify-otp');
           try {
             const response = await api.post('/auth/verify-otp', { phone, otp, purpose: 'phone_verification' });
+            console.log('[AUTH DEBUG] VERIFY OTP RESPONSE');
+            console.log('[AUTH DEBUG] status:', response.status);
+            console.log('[AUTH DEBUG] success:', response.data?.success);
+            console.log('[AUTH DEBUG] dataKeys:', Object.keys(response.data?.data || {}));
+            console.log('[AUTH DEBUG] hasAccessToken:', !!(response.data?.data?.accessToken || response.data?.data?.token));
+            console.log('[AUTH DEBUG] hasResetToken:', !!(response.data?.data?.resetToken));
             if (response.data?.success) {
-              const authResult = await handleAuthResponse(response.data);
+              const authResult = await handleAuthResponse(response.data, 'phone_verification');
               if (authResult) return authResult;
             }
           } catch (phoneErr: any) {
-            console.log('[OTP] phone_verification failed, trying password_reset purpose');
+            console.log('[AUTH DEBUG] VERIFY OTP RESPONSE');
+            console.log('[AUTH DEBUG] purpose: phone_verification');
+            console.log('[AUTH DEBUG] status:', phoneErr.response?.status);
+            console.log('[AUTH DEBUG] success: false');
+            console.log('[AUTH DEBUG] error:', phoneErr.response?.data?.message || phoneErr.message);
           }
 
-          // Fallback: try verifying as password_reset
+          // Attempt 2: password_reset purpose (fallback for already-verified phones)
+          console.log('[AUTH DEBUG] purpose: password_reset');
+          console.log('[AUTH DEBUG] endpoint: /auth/verify-otp');
           try {
             const response = await api.post('/auth/verify-otp', { phone, otp, purpose: 'password_reset' });
+            console.log('[AUTH DEBUG] VERIFY OTP RESPONSE');
+            console.log('[AUTH DEBUG] status:', response.status);
+            console.log('[AUTH DEBUG] success:', response.data?.success);
+            console.log('[AUTH DEBUG] dataKeys:', Object.keys(response.data?.data || {}));
+            console.log('[AUTH DEBUG] hasAccessToken:', !!(response.data?.data?.accessToken || response.data?.data?.token));
+            console.log('[AUTH DEBUG] hasResetToken:', !!(response.data?.data?.resetToken));
             if (response.data?.success) {
-              const authResult = await handleAuthResponse(response.data);
+              const authResult = await handleAuthResponse(response.data, 'password_reset');
               if (authResult) return authResult;
             }
           } catch (resetErr: any) {
-            console.log('[OTP] password_reset purpose failed');
+            console.log('[AUTH DEBUG] VERIFY OTP RESPONSE');
+            console.log('[AUTH DEBUG] purpose: password_reset');
+            console.log('[AUTH DEBUG] status:', resetErr.response?.status);
+            console.log('[AUTH DEBUG] success: false');
+            console.log('[AUTH DEBUG] error:', resetErr.response?.data?.message || resetErr.message);
+            const errorMsg = resetErr.response?.data?.message || resetErr.message || 'Invalid OTP';
+            set({ isLoading: false, error: errorMsg });
+            return { success: false, error: errorMsg };
           }
 
-          // Fallback for demo / unconfigured backend SMS service:
-          const mockUser = {
-            id: 'usr_' + Date.now(),
-            name: 'User ' + phone.slice(-4),
-            email: '',
-            phone: phone,
-            role: 'customer'
-          };
-          set({ 
-            user: mockUser as any, 
-            token: 'mock-token', 
-            isAuthenticated: true, 
-            error: null, 
-            isLoading: false 
-          });
-          return { success: true };
+          // Both attempts returned a successful HTTP response but no usable token — surface as failure.
+          const fallbackError = 'OTP verification did not return a valid session. Please try again.';
+          console.warn('[AUTH DEBUG] VERIFY OTP: success:true received but no token extracted. Returning failure.');
+          set({ isLoading: false, error: fallbackError });
+          return { success: false, error: fallbackError };
         } catch (error: any) {
-          console.warn('Verify OTP error', error.message || error);
-          const mockUser = {
-            id: 'usr_' + Date.now(),
-            name: 'User ' + phone.slice(-4),
-            email: '',
-            phone: phone,
-            role: 'customer'
-          };
-          set({ 
-            user: mockUser as any, 
-            token: 'mock-token', 
-            isAuthenticated: true, 
-            error: null, 
-            isLoading: false 
-          });
-          return { success: true };
+          console.warn('[AUTH DEBUG] Verify OTP outer error:', error.message || error);
+          const errorMsg = error.response?.data?.message || error.message || 'Verification failed';
+          set({ isLoading: false, error: errorMsg });
+          return { success: false, error: errorMsg };
         }
       },
 
@@ -290,9 +367,15 @@ export const useAuthStore = create<AuthStore>()(
 
       resetPassword: async (resetToken: string, newPassword: string) => {
         set({ isLoading: true, error: null });
+        console.log('[AUTH DEBUG] ===== RESET PASSWORD START =====');
+        console.log('[AUTH DEBUG] resetTokenProvided:', !!resetToken);
+        console.log('[AUTH DEBUG] newPasswordProvided:', !!newPassword);
         try {
           const api = require('../services/api').default;
           const response = await api.post('/auth/reset-password', { resetToken, newPassword, confirmPassword: newPassword });
+          console.log('[AUTH DEBUG] RESET PASSWORD RESPONSE');
+          console.log('[AUTH DEBUG] status:', response.status);
+          console.log('[AUTH DEBUG] success:', response.data?.success);
           if (response.data.success) {
             set({ isLoading: false });
             return { success: true };
@@ -310,18 +393,27 @@ export const useAuthStore = create<AuthStore>()(
 
       register: async (fullName: string, email: string, password: string) => {
         set({ isLoading: true, error: null });
+        console.log('[Register Debug] Starting registration with payload:', { fullName, email, passwordLength: password?.length });
         try {
           const api = require('../services/api').default;
+          console.log('[Register Debug] Sending POST /auth/register request...');
           const response = await api.post('/auth/register', { fullName, email, password });
+          console.log('[Register Debug] Response status:', response.status, 'Response body:', JSON.stringify(response.data));
           if (response.data.success) {
+            console.log('[Register Debug] Registration successful!');
             set({ isLoading: false });
             return { success: true };
           } else {
+            console.log('[Register Debug] Registration failed with message:', response.data.message);
             set({ error: response.data.message || 'Registration failed', isLoading: false });
             return { success: false, error: response.data.message };
           }
         } catch (error: any) {
-          console.warn('Register error', error.message || error);
+          console.warn('[Register Debug] Registration error occurred:', {
+            status: error.response?.status,
+            data: error.response?.data,
+            message: error.message
+          });
           const errorMsg = error.response?.data?.message || error.message || 'Network error. Please try again.';
           set({ error: errorMsg, isLoading: false });
           return { success: false, error: errorMsg };
@@ -332,7 +424,7 @@ export const useAuthStore = create<AuthStore>()(
         try {
           const api = require('../services/api').default;
           const currentUser = get().user;
-          
+
           // Build complete payload matching backend field expectations (fullName, phone_no, phone, email, avatar)
           const payload: any = {
             ...userData,
@@ -431,7 +523,7 @@ export const useAuthStore = create<AuthStore>()(
       logout: async () => {
         try {
           const api = require('../services/api').default;
-          await api.post('/auth/logout').catch(() => {}); // Ignore logout errors
+          await api.post('/auth/logout').catch(() => { }); // Ignore logout errors
           set({ user: null, token: null, refreshToken: null, sessionId: null, sessions: [], isAuthenticated: false, error: null });
         } catch (error: any) {
           console.warn('Error during logout', error.message || error);

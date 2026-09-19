@@ -12,7 +12,12 @@ import { useProfileStore } from '../src/store/profileStore';
 import { useOrderStore } from '../src/store/orderStore';
 import { useStoreStore } from '../src/store/storeStore';
 import { useSnackbar } from '../src/components/ui/SnackbarContext';
-import RazorpayCheckout from 'react-native-razorpay';
+let RazorpayCheckout: any = null;
+try {
+  RazorpayCheckout = require('react-native-razorpay').default;
+} catch (e) {
+  console.log('[Razorpay] Native module not available in Expo Go');
+}
 
 export default function CheckoutScreen() {
   const router = useRouter();
@@ -80,9 +85,8 @@ export default function CheckoutScreen() {
         }
 
         // Razorpay Flow
-        if (Platform.OS === 'web') {
-          // On Web, react-native-razorpay isn't fully supported natively, so mock success or use window.Razorpay
-          showSnackbar('Razorpay web mock: Payment Successful', 'success');
+        if (Platform.OS === 'web' || !RazorpayCheckout || typeof RazorpayCheckout.open !== 'function') {
+          showSnackbar('Razorpay native checkout requires custom build. Simulating successful order...', 'info');
           handleSuccessOrder();
           return;
         }

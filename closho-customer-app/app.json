@@ -4,20 +4,20 @@
     "slug": "closho-customer-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/android-icon-foreground.png",
     "scheme": "closhocustomerapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/images/icon.png",
+      "icon": "./assets/images/android-icon-foreground.png",
       "bundleIdentifier": "com.closho.customerapp"
     },
     "android": {
       "package": "com.closho.customerapp",
       "adaptiveIcon": {
         "backgroundColor": "#000000",
-        "foregroundImage": "./assets/images/icon.png",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/icon.png"
+        "monochromeImage": "./assets/images/android-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false
     },
@@ -27,23 +27,24 @@
     },
     "plugins": [
       "expo-router",
+      "./withCleartextTraffic",
       [
         "expo-splash-screen",
         {
           "backgroundColor": "#000000",
-          "image": "./assets/images/icon.png",
+          "image": "./assets/images/android-icon-foreground.png",
           "imageWidth": 200
         }
       ],
       "expo-image",
       "expo-secure-store",
       "expo-video",
-      "@react-native-google-signin/google-signin"
+      "@react-native-google-signin/google-signin",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true
     },
-    "newArchEnabled": false,
     "updates": {
       "url": "https://u.expo.dev/ba12a1fb-1eae-4c46-bd89-d14440f7fb3f"
     },
@@ -53,8 +54,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "ba12a1fb-1eae-4c46-bd89-d14440f7fb3f"
+        "projectId": "3b4062f5-3df1-41c3-9884-7c40f7679e83"
       }
-    }
+    },
+    "owner": "0xsharik"
   }
 }
