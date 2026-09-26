@@ -63,13 +63,13 @@ export default function WishlistScreen() {
                     colorName: 'Default',
                     colorHex: '#000000',
                     quantity: 1,
-                    image: product.imageUrl
+                    image: product.imageUrl ?? '',
                   });
-                  if (res?.success) {
+                  if (res.success) {
                     await removeFromWishlist(product.id);
                     showSnackbar('Moved to Cart', 'success');
                   } else {
-                    showSnackbar('Failed to move to cart', 'error');
+                    showSnackbar(res.message || 'Failed to move to cart', 'error');
                   }
                 }} 
               />

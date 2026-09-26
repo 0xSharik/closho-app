@@ -1,10 +1,11 @@
-import React, { useEffect, useRef } from 'react';
-import { View, StyleSheet, Animated, Image, Text } from 'react-native';
 import { useRouter } from 'expo-router';
+import * as ExpoSplashScreen from 'expo-splash-screen';
+import { useEffect, useRef } from 'react';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 import { useAuthStore } from '../../src/store/authStore';
 import { colors } from '../../src/theme/colors';
-import { typography } from '../../src/theme/typography';
 import { spacing } from '../../src/theme/spacing';
+import { typography } from '../../src/theme/typography';
 
 export default function SplashScreen() {
   const router = useRouter();
@@ -15,9 +16,7 @@ export default function SplashScreen() {
 
   useEffect(() => {
     // Hide the native splash screen now that our custom one is mounted
-    import('expo-splash-screen').then(SplashScreen => {
-      SplashScreen.hideAsync().catch(() => {});
-    });
+    ExpoSplashScreen.hideAsync().catch(() => { });
 
     Animated.parallel([
       Animated.timing(fadeAnim, { toValue: 1, duration: 1200, useNativeDriver: true }),

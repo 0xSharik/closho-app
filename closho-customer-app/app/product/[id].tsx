@@ -1,5 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Dimensions, Animated, Platform, ActivityIndicator } from 'react-native';
+import {
+  View, Text, StyleSheet, ScrollView, Image, TouchableOpacity,
+  Dimensions, Animated, Platform, ActivityIndicator,
+} from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../src/theme/colors';
@@ -21,11 +24,14 @@ export default function ProductDetailsScreen() {
   const { addToCart } = useCartStore();
   const { toggleWishlist, isInWishlist } = useWishlistStore();
   const { currentStore } = useStoreStore();
-  
+
   const [product, setProduct] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedColor, setSelectedColor] = useState('');
   const [selectedSize, setSelectedSize] = useState('');
+  const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const [imageErrors, setImageErrors] = useState<Record<number, boolean>>({});
 
   const scrollY = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -40,45 +46,55 @@ export default function ProductDetailsScreen() {
         const api = require('../../src/services/api').default;
         const storeIdParam = currentStore ? `?storeId=${currentStore.id}` : '';
         const url = `/products/${id}${storeIdParam}`;
-        console.log(`=== PRODUCT DETAILS REQUEST === URL: ${url}`);
+        console.log('[PRODUCT] Fetching:', url);
         const response = await api.get(url);
-        console.log(`=== PRODUCT DETAILS RESPONSE ===`, JSON.stringify(response.data, null, 2));
-        
+
         if (response.data.success) {
           const p = response.data.data;
-          
-          // Format based on API Contract
+          console.log('[PRODUCT] images:', p.images, '| thumbnail:', p.thumbnail);
+
           const formatted = {
             id: p.id,
             name: p.name,
-            description: p.description || 'Designed for everyday comfort with a clean and timeless look.',
+            description: p.description || 'Designed for everyday comfort.',
             price: Number(p.price),
             originalPrice: p.originalPrice ? Number(p.originalPrice) : undefined,
             discount: p.discountPercent,
-            images: (p.images && p.images.length > 0) ? p.images : (p.thumbnail ? [p.thumbnail] : ['https://via.placeholder.com/600x800?text=No+Image']),
-            imageUrl: p.thumbnail || p.images?.[0] || 'https://via.placeholder.com/600x800?text=No+Image',
+            // images array: prefer images[], fall back to thumbnail
+            images: (p.images && p.images.length > 0)
+              ? p.images.filter(Boolean)
+              : (p.thumbnail ? [p.thumbnail] : []),
+            // primary image URL for cart/wishlist
+            imageUrl: (p.images && p.images.length > 0) ? p.images[0] : (p.thumbnail || null),
             rating: p.rating || 4.5,
             reviews: p.reviewCount || 0,
             stock: p.variants?.[0]?.stock || 0,
-            colors: p.variants ? 
-              Array.from(new Set(p.variants.map((v: any) => v.color))).map((c: any) => ({
-                id: c,
-                name: c,
-                hex: p.variants.find((v: any) => v.color === c)?.colorHex || '#000000'
-              })) : [{ id: 'c1', name: 'Default', hex: '#000000' }],
-            sizes: p.variants ? 
-              Array.from(new Set<string>(p.variants.map((v: any) => String(v.size)))) : ['M'],
+            // storeId from the product itself — AUTHORITATIVE for cart operations
+            storeId: p.store?.id || currentStore?.id || null,
+            colors: p.variants
+              ? Array.from(new Set(p.variants.map((v: any) => v.color))).map((c: any) => ({
+                  id: c,
+                  name: c,
+                  hex: p.variants.find((v: any) => v.color === c)?.colorHex || '#888888',
+                }))
+              : [{ id: 'Default', name: 'Default', hex: '#888888' }],
+            sizes: p.variants
+              ? Array.from(new Set<string>(p.variants.map((v: any) => String(v.size))))
+              : ['M'],
             rawVariants: p.variants || [],
           };
-          
+
+          console.log('[PRODUCT] formatted.imageUrl:', formatted.imageUrl);
+          console.log('[PRODUCT] formatted.storeId:', formatted.storeId);
+
           setProduct(formatted);
-          setSelectedColor(formatted.colors[0]?.id);
-          setSelectedSize(formatted.sizes[0]);
+          setSelectedColor(formatted.colors[0]?.id || '');
+          setSelectedSize(String(formatted.sizes[0] || ''));
         } else {
           showSnackbar('Failed to load product', 'error');
         }
       } catch (err) {
-        console.error('Error fetching product details', err);
+        console.error('[PRODUCT] Fetch error:', err);
         showSnackbar('Error connecting to server', 'error');
       } finally {
         setIsLoading(false);
@@ -111,12 +127,34 @@ export default function ProductDetailsScreen() {
       name: product.name,
       price: product.price,
       rating: product.rating,
-      imageUrl: product.imageUrl,
+      imageUrl: product.imageUrl || '',
     });
     showSnackbar(
       isInWishlist(product.id) ? 'Removed from Wishlist' : 'Added to Wishlist',
-      'info'
+      'info',
     );
+  };
+
+  // ─── Shared cart-item builder ────────────────────────────────────────────────
+  const buildCartItem = () => {
+    const colorObj = product.colors.find((c: any) => c.id === selectedColor);
+    const matchingVariant = product.rawVariants?.find(
+      (v: any) => v.color === selectedColor && String(v.size) === String(selectedSize),
+    );
+    const cartItem: any = {
+      productId: product.id,
+      name: product.name,
+      price: product.price,
+      size: selectedSize,
+      colorName: colorObj?.name || 'Default',
+      colorHex: colorObj?.hex || '#000000',
+      quantity: 1,
+      image: product.imageUrl || '',
+      storeId: product.storeId, // product's own storeId — avoids stale global store
+    };
+    if (matchingVariant?.id) cartItem.variantId = matchingVariant.id;
+    console.log('[PRODUCT] Cart item built:', JSON.stringify(cartItem, null, 2));
+    return cartItem;
   };
 
   if (isLoading || !product) {
@@ -141,44 +179,91 @@ export default function ProductDetailsScreen() {
           <Ionicons name="arrow-back" size={24} color={colors.text.inverse} />
         </TouchableOpacity>
         <TouchableOpacity style={styles.iconBtn} onPress={handleWishlistToggle}>
-          <Ionicons name={isWishlisted ? "heart" : "heart-outline"} size={24} color={isWishlisted ? colors.status.error : colors.text.inverse} />
+          <Ionicons
+            name={isWishlisted ? 'heart' : 'heart-outline'}
+            size={24}
+            color={isWishlisted ? colors.status.error : colors.text.inverse}
+          />
         </TouchableOpacity>
       </View>
 
-      <ScrollView 
-        contentContainerStyle={styles.scrollContent} 
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: false }
+          { useNativeDriver: false },
         )}
         scrollEventThrottle={16}
       >
+        {/* Image Gallery */}
         <View style={styles.imageGallery}>
-          <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
-            {product.images.map((img: string, index: number) => (
-              <Image key={index} source={{ uri: img }} style={styles.productImage} />
-            ))}
+          <ScrollView
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            onMomentumScrollEnd={(e) => {
+              const index = Math.round(e.nativeEvent.contentOffset.x / width);
+              setActiveImageIndex(index);
+            }}
+          >
+            {(() => {
+              const imagesToShow = product.images.length > 0
+                ? product.images
+                : (product.imageUrl ? [product.imageUrl] : []);
+
+              if (imagesToShow.length === 0) {
+                return (
+                  <View style={[styles.productImage, { backgroundColor: colors.surfaceLight, justifyContent: 'center', alignItems: 'center' }]}>
+                    <Ionicons name="shirt-outline" size={80} color={colors.text.tertiary} />
+                    <Text style={{ color: colors.text.tertiary, marginTop: 8 }}>No Image</Text>
+                  </View>
+                );
+              }
+
+              return imagesToShow.map((img: string, index: number) =>
+                imageErrors[index] ? (
+                  <View key={index} style={[styles.productImage, { backgroundColor: colors.surfaceLight, justifyContent: 'center', alignItems: 'center' }]}>
+                    <Ionicons name="shirt-outline" size={80} color={colors.text.tertiary} />
+                  </View>
+                ) : (
+                  <Image
+                    key={index}
+                    source={{ uri: img }}
+                    style={styles.productImage}
+                    onError={() => {
+                      console.warn('[PRODUCT] Image failed to load:', img);
+                      setImageErrors(prev => ({ ...prev, [index]: true }));
+                    }}
+                  />
+                ),
+              );
+            })()}
           </ScrollView>
-          <View style={styles.pagination}>
-            {product.images.map((_: any, index: number) => (
-              <View key={index} style={[styles.dot, index === 0 && styles.dotActive]} />
-            ))}
-          </View>
+
+          {product.images.length > 1 && (
+            <View style={styles.pagination}>
+              {product.images.map((_: any, index: number) => (
+                <View key={index} style={[styles.dot, index === activeImageIndex && styles.dotActive]} />
+              ))}
+            </View>
+          )}
         </View>
 
         <View style={styles.content}>
+          {/* Title Row */}
           <View style={styles.titleRow}>
             <Text style={styles.title}>{product.name}</Text>
             <TouchableOpacity onPress={handleWishlistToggle} style={styles.wishlistBtn}>
-              <Ionicons 
-                name={isWishlisted ? "heart" : "heart-outline"} 
-                size={28} 
-                color={isWishlisted ? colors.primary : colors.text.primary} 
+              <Ionicons
+                name={isWishlisted ? 'heart' : 'heart-outline'}
+                size={28}
+                color={isWishlisted ? colors.primary : colors.text.primary}
               />
             </TouchableOpacity>
           </View>
-          
+
+          {/* Rating */}
           <View style={styles.metaRow}>
             <View style={styles.ratingBadge}>
               <Ionicons name="star" size={14} color={colors.primary} />
@@ -186,23 +271,25 @@ export default function ProductDetailsScreen() {
               <Text style={styles.reviewText}>({product.reviews || 0})</Text>
             </View>
           </View>
-          
+
+          {/* Price */}
           <Text style={styles.price}>₹{product.price.toFixed(2)}</Text>
-          {product.originalPrice && (
+          {product.originalPrice ? (
             <Text style={styles.originalPrice}>₹{product.originalPrice.toFixed(2)}</Text>
-          )}
-          {product.discount && (
+          ) : null}
+          {product.discount > 0 ? (
             <View style={styles.discountBadge}>
               <Text style={styles.discountText}>-{product.discount}%</Text>
             </View>
-          )}
+          ) : null}
 
+          {/* Color Selector */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Color</Text>
             <View style={styles.selectorRow}>
               {product.colors.map((c: any) => (
-                <TouchableOpacity 
-                  key={c.id} 
+                <TouchableOpacity
+                  key={c.id}
                   style={[styles.colorCircle, selectedColor === c.id && styles.colorCircleSelected]}
                   onPress={() => handleColorSelect(c.id)}
                 >
@@ -210,17 +297,23 @@ export default function ProductDetailsScreen() {
                 </TouchableOpacity>
               ))}
             </View>
+            <Text style={{ color: colors.text.secondary, fontSize: typography.fontSize.sm, marginTop: 4 }}>
+              Selected: {selectedColor}
+            </Text>
           </View>
-          
+
+          {/* Size Selector */}
           <View style={styles.section}>
             <View style={styles.sizeHeader}>
               <Text style={styles.sectionTitle}>Size</Text>
-              {product.stock <= 5 && <Text style={styles.lowStock}>Only {product.stock} left</Text>}
+              {product.stock > 0 && product.stock <= 5 ? (
+                <Text style={styles.lowStock}>Only {product.stock} left</Text>
+              ) : null}
             </View>
             <View style={styles.selectorRow}>
               {product.sizes.map((s: string) => (
-                <TouchableOpacity 
-                  key={s} 
+                <TouchableOpacity
+                  key={s}
                   style={[styles.sizeBox, selectedSize === s && styles.sizeBoxSelected]}
                   onPress={() => handleSizeSelect(s)}
                 >
@@ -230,12 +323,13 @@ export default function ProductDetailsScreen() {
             </View>
           </View>
 
+          {/* Description */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Description</Text>
             <Text style={styles.descriptionText}>{product.description}</Text>
           </View>
 
-          {/* Customer Reviews Mock Section */}
+          {/* Reviews */}
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Customer Reviews</Text>
             <View style={styles.reviewCard}>
@@ -244,10 +338,9 @@ export default function ProductDetailsScreen() {
                 <View style={styles.reviewerInfo}>
                   <Text style={styles.reviewerName}>Rahul Sharma</Text>
                   <View style={{ flexDirection: 'row' }}>
-                    <Ionicons name="star" size={12} color={colors.primary} />
-                    <Ionicons name="star" size={12} color={colors.primary} />
-                    <Ionicons name="star" size={12} color={colors.primary} />
-                    <Ionicons name="star" size={12} color={colors.primary} />
+                    {[1, 2, 3, 4].map(i => (
+                      <Ionicons key={i} name="star" size={12} color={colors.primary} />
+                    ))}
                     <Ionicons name="star" size={12} color={colors.text.tertiary} />
                   </View>
                 </View>
@@ -255,19 +348,9 @@ export default function ProductDetailsScreen() {
               </View>
               <Text style={styles.reviewBody}>Amazing quality! Fits perfectly and looks very premium. Highly recommend.</Text>
             </View>
-            <TouchableOpacity 
-              style={{
-                marginTop: spacing.md, 
-                paddingVertical: spacing.sm,
-                borderWidth: 1, 
-                borderColor: colors.primary, 
-                borderRadius: 8, 
-                alignItems: 'center'
-              }}
-              onPress={() => {
-                Haptics.selectionAsync();
-                showSnackbar('Review functionality coming soon!', 'info');
-              }}
+            <TouchableOpacity
+              style={{ marginTop: spacing.md, paddingVertical: spacing.sm, borderWidth: 1, borderColor: colors.primary, borderRadius: 8, alignItems: 'center' }}
+              onPress={() => { Haptics.selectionAsync(); showSnackbar('Review functionality coming soon!', 'info'); }}
             >
               <Text style={{ color: colors.primary, fontWeight: 'bold' }}>Write a Review</Text>
             </TouchableOpacity>
@@ -275,65 +358,44 @@ export default function ProductDetailsScreen() {
         </View>
       </ScrollView>
 
+      {/* Footer Buttons */}
       <View style={styles.footer}>
-        <Button 
-          title="Buy Now" 
-          variant="outline" 
-          style={styles.checkoutBtn} 
+        {/* BUY NOW */}
+        <Button
+          title="Buy Now"
+          variant="outline"
+          style={styles.checkoutBtn}
+          textStyle={{ textAlign: 'center' }}
+          disabled={isAddingToCart}
           onPress={async () => {
+            if (isAddingToCart) return;
+            setIsAddingToCart(true);
             Haptics.impactAsync();
-            const colorObj = product.colors.find((c: any) => c.id === selectedColor);
-            
-            // Find matching variantId from raw variants
-            const matchingVariant = product.rawVariants?.find((v: any) => v.color === selectedColor && String(v.size) === String(selectedSize));
-            const variantId = matchingVariant?.id;
-            
             showSnackbar('Adding to Cart...', 'info');
-            const result = await addToCart({
-              productId: product.id,
-              variantId: variantId,
-              name: product.name,
-              price: product.price,
-              size: selectedSize,
-              colorName: colorObj ? colorObj.name : 'Default',
-              colorHex: colorObj ? colorObj.hex : '#000000',
-              quantity: 1,
-              image: product.imageUrl,
-            });
-            
+            const result = await addToCart(buildCartItem());
+            setIsAddingToCart(false);
             if (result.success) {
-              showSnackbar('Added to Cart! Redirecting...', 'success');
-              router.push('/(tabs)/cart');
+              router.push('/checkout');
             } else {
               showSnackbar(result.message || 'Failed to add to cart', 'error');
             }
           }}
         />
-        <Button 
-          title="Add to Cart" 
-          style={styles.addToCartBtn} 
+        {/* ADD TO CART */}
+        <Button
+          title={isAddingToCart ? 'Adding...' : 'Add to Cart'}
+          style={styles.addToCartBtn}
+          textStyle={{ textAlign: 'center' }}
+          disabled={isAddingToCart}
           onPress={async () => {
+            if (isAddingToCart) return;
+            setIsAddingToCart(true);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            const colorObj = product.colors.find((c: any) => c.id === selectedColor);
-            
-            // Find matching variantId from raw variants
-            const matchingVariant = product.rawVariants?.find((v: any) => v.color === selectedColor && String(v.size) === String(selectedSize));
-            const variantId = matchingVariant?.id;
-            
-            const result = await addToCart({
-              productId: product.id,
-              variantId: variantId,
-              name: product.name,
-              price: product.price,
-              size: selectedSize,
-              colorName: colorObj ? colorObj.name : 'Default',
-              colorHex: colorObj ? colorObj.hex : '#000000',
-              quantity: 1,
-              image: product.imageUrl,
-            });
-            
+            const result = await addToCart(buildCartItem());
+            setIsAddingToCart(false);
             if (result.success) {
-              showSnackbar('Added to Cart', 'success');
+              showSnackbar('Added to Cart!', 'success');
+              router.push('/(tabs)/cart');
             } else {
               showSnackbar(result.message || 'Failed to add to cart', 'error');
             }
@@ -376,12 +438,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  imageScroll: {
-    height: 500,
-  },
   productImage: {
     width: width,
-    height: 500,
+    height: 460,
     resizeMode: 'contain',
   },
   scrollContent: {
@@ -432,13 +491,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: spacing.md,
-  },
-  productName: {
-    color: colors.text.primary,
-    fontSize: typography.fontSize.xxl,
-    fontWeight: '900',
-    flex: 1,
-    marginRight: spacing.md,
   },
   ratingBadge: {
     flexDirection: 'row',
@@ -506,6 +558,7 @@ const styles = StyleSheet.create({
   selectorRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
   },
   colorCircle: {
     width: 44,
@@ -516,6 +569,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: spacing.md,
+    marginBottom: spacing.sm,
   },
   colorCircleSelected: {
     borderColor: colors.primary,
@@ -536,6 +590,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: spacing.md,
+    marginBottom: spacing.sm,
     backgroundColor: colors.surface,
   },
   sizeBoxSelected: {
@@ -577,7 +632,7 @@ const styles = StyleSheet.create({
     marginRight: spacing.md,
   },
   addToCartBtn: {
-    flex: 1.5,
+    flex: 1,
   },
   reviewCard: {
     backgroundColor: colors.surfaceLight,

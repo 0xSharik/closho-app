@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { Animated, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -38,13 +38,21 @@ try {
 const registerSchema = z.object({
   fullName: z.string().min(2, 'Full name is required'),
   email: z.string().email('Please enter a valid email address'),
+  phone: z.string().regex(/^\d{10}$/, 'Please enter a valid 10-digit mobile number'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
 });
 
 type RegisterForm = z.infer<typeof registerSchema>;
 
+type AuthControllerField = {
+  onChange: (value: string) => void;
+  onBlur: () => void;
+  value: string;
+};
+
 export default function RegisterScreen() {
   const router = useRouter();
+  const { phone: phoneParam } = useLocalSearchParams<{ phone?: string }>();
   const { showSnackbar } = useSnackbar();
   const [isLoading, setIsLoading] = useState(false);
 
@@ -58,17 +66,33 @@ export default function RegisterScreen() {
     ]).start();
   }, []);
 
+  const initialPhone = typeof phoneParam === 'string'
+    ? phoneParam.replace(/\D/g, '').slice(-10)
+    : '';
+
   const { control, handleSubmit, formState: { errors } } = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
     defaultValues: {
       fullName: '',
       email: '',
+      phone: initialPhone,
       password: '',
     },
   });
 
   const onSubmit = async (data: RegisterForm) => {
-    console.log('[Register Screen Debug] Form submitted with:', { fullName: data.fullName, email: data.email });
+    if (isLoading) return;
+
+    console.log('[Register Screen Debug] Form submitted with:', {
+      fullName: data.fullName,
+      email: data.email,
+      phone: data.phone,
+    });
+
+    // Keep the existing register() signature unchanged.
+    // The store reads the pending phone and sends it as part of /auth/register.
+    useAuthStore.getState().setPendingPhone(data.phone);
+
     setIsLoading(true);
     const result = await useAuthStore.getState().register(data.fullName, data.email, data.password);
     setIsLoading(false);
@@ -77,7 +101,7 @@ export default function RegisterScreen() {
 
     if (result.success) {
       showSnackbar('Registration successful! Please login.', 'success');
-      router.push('/(auth)/login');
+      router.replace('/(auth)/login');
     } else {
       showSnackbar(result.error || 'Registration failed. Try again.', 'error');
     }
@@ -136,7 +160,7 @@ export default function RegisterScreen() {
           <Controller
             control={control}
             name="fullName"
-            render={({ field: { onChange, onBlur, value } }) => (
+            render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
               <Input
                 label="Full Name"
                 placeholder="John Doe"
@@ -151,7 +175,7 @@ export default function RegisterScreen() {
           <Controller
             control={control}
             name="email"
-            render={({ field: { onChange, onBlur, value } }) => (
+            render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
               <Input
                 label="Email"
                 placeholder="Enter your email"
@@ -167,8 +191,25 @@ export default function RegisterScreen() {
 
           <Controller
             control={control}
+            name="phone"
+            render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
+              <Input
+                label="Mobile Number"
+                placeholder="Enter 10-digit mobile number"
+                keyboardType="phone-pad"
+                maxLength={10}
+                onBlur={onBlur}
+                onChangeText={(text) => onChange(text.replace(/\D/g, ''))}
+                value={value}
+                error={errors.phone?.message}
+              />
+            )}
+          />
+
+          <Controller
+            control={control}
             name="password"
-            render={({ field: { onChange, onBlur, value } }) => (
+            render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
               <Input
                 label="Password"
                 placeholder="Create a password"

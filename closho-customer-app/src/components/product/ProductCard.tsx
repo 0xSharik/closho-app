@@ -71,7 +71,7 @@ export const ProductCard = ({ product, onPress, style }: ProductCardProps) => {
         onPress={onPress}
       >
         <View style={[styles.imageContainer, { height: computedWidth * 1.05 }]}>
-          <Image source={{ uri: product.imageUrl }} style={styles.image} resizeMode="cover" />
+          <Image source={{ uri: product.imageUrl || 'https://placehold.co/300x300' }} style={styles.image} resizeMode="cover" />
           
           <TouchableOpacity style={styles.wishlistBtn} onPress={handleWishlist}>
             <View style={styles.wishlistIconBg}>
@@ -95,11 +95,11 @@ export const ProductCard = ({ product, onPress, style }: ProductCardProps) => {
           <Text style={styles.name} numberOfLines={2}>{product.name}</Text>
           
           <View style={styles.priceContainer}>
-            <Text style={styles.price}>₹{product.price.toLocaleString('en-IN')}</Text>
-            {product.originalPrice && (
+            <Text style={styles.price}>₹{(Number(product.price) || 0).toLocaleString('en-IN')}</Text>
+            {!!product.originalPrice && product.originalPrice > 0 && (
               <Text style={styles.originalPrice}>₹{product.originalPrice.toLocaleString('en-IN')}</Text>
             )}
-            {product.discount && (
+            {!!product.discount && product.discount > 0 && (
               <Text style={styles.discountText}>({product.discount}% OFF)</Text>
             )}
           </View>

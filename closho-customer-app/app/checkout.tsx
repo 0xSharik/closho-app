@@ -14,14 +14,21 @@ import { useStoreStore } from '../src/store/storeStore';
 import { useSnackbar } from '../src/components/ui/SnackbarContext';
 let RazorpayCheckout: any = null;
 try {
-  RazorpayCheckout = require('react-native-razorpay').default;
-} catch (e) {
-  console.log('[Razorpay] Native module not available in Expo Go');
+  const RazorpayModule = require('react-native-razorpay');
+  RazorpayCheckout = RazorpayModule.default || RazorpayModule;
+  if (RazorpayCheckout && typeof RazorpayCheckout.open === 'function') {
+    console.log('[Razorpay] ✅ Native module loaded successfully');
+  } else {
+    console.warn('[Razorpay] ⚠️ Module loaded but .open() not found:', Object.keys(RazorpayCheckout || {}));
+    RazorpayCheckout = null;
+  }
+} catch (e: any) {
+  console.log('[Razorpay] ❌ Native module not available:', e?.message);
 }
 
 export default function CheckoutScreen() {
   const router = useRouter();
-  const { items, getCartTotal, discountAmount, clearCart, couponCode } = useCartStore();
+  const { items, getCartTotal, discountAmount, clearCart, couponCode, activeStoreId: cartActiveStoreId } = useCartStore();
   const { addresses, paymentMethods } = useProfileStore();
   const { createOrder } = useOrderStore();
   const { currentStore } = useStoreStore();
@@ -31,7 +38,7 @@ export default function CheckoutScreen() {
   const defaultPayment = paymentMethods.find(p => p.isDefault) || paymentMethods[0];
 
   const [selectedAddressId, setSelectedAddressId] = useState(defaultAddress?.id || '');
-  const [selectedPaymentId, setSelectedPaymentId] = useState(defaultPayment?.id || '');
+  const [selectedPaymentId, setSelectedPaymentId] = useState(defaultPayment?.id || 'razorpay');
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
 
@@ -58,20 +65,40 @@ export default function CheckoutScreen() {
       showSnackbar('Please select a delivery address', 'error');
       return;
     }
-    const activeStore = currentStore || useStoreStore.getState().availableStores[0];
-    if (!activeStore?.id) {
-      showSnackbar('Store context lost. Cannot proceed.', 'error');
+
+    // Resolve storeId: cart's activeStoreId is most reliable (it's the store where items were added)
+    // then fall back to currentStore, then fetch all stores
+    let activeStore = currentStore || useStoreStore.getState().availableStores[0];
+    
+    // If cartActiveStoreId is set, prefer it — it's the authoritative store for this cart
+    const resolvedStoreId = cartActiveStoreId 
+      || currentStore?.id 
+      || useStoreStore.getState().availableStores[0]?.id;
+
+    if (!resolvedStoreId) {
+      await useStoreStore.getState().fetchAllStores();
+      activeStore = useStoreStore.getState().availableStores[0];
+    }
+    
+    const finalStoreId = resolvedStoreId || activeStore?.id;
+    console.log('[checkout] resolvedStoreId:', finalStoreId, '| cartActiveStoreId:', cartActiveStoreId, '| currentStore?.id:', currentStore?.id);
+
+    if (!finalStoreId) {
+      showSnackbar('No store available. Please try again later.', 'error');
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsPlacingOrder(true);
     
     try {
-      const paymentMethod = paymentMethods.find(p => p.id === selectedPaymentId)?.brand || 'cod';
-      const isRazorpay = paymentMethod.toLowerCase() === 'razorpay' || paymentMethod.toLowerCase() === 'card' || paymentMethod.toLowerCase() === 'upi';
+      // Resolve payment method — works for both real saved methods and fallback defaults (id='cod', id='razorpay')
+      const fallbackMethods: Record<string, string> = { cod: 'cod', razorpay: 'razorpay' };
+      const savedMethod = paymentMethods.find(p => p.id === selectedPaymentId)?.brand?.toLowerCase();
+      const resolvedMethod = savedMethod || fallbackMethods[selectedPaymentId] || 'cod';
+      const isRazorpay = resolvedMethod === 'razorpay' || resolvedMethod === 'card' || resolvedMethod === 'upi';
       
       const response = await createOrder({
-        storeId: activeStore.id,
+        storeId: finalStoreId,
         addressId: selectedAddressId,
         paymentMethod: isRazorpay ? 'razorpay' : 'cod',
         couponCode: couponCode
@@ -103,6 +130,7 @@ export default function CheckoutScreen() {
         };
 
         try {
+          console.log('[Razorpay] Opening checkout with options:', JSON.stringify({ ...options, key: '***' }));
           const data = await RazorpayCheckout.open(options);
           handleSuccessOrder();
         } catch (error: any) {
@@ -299,9 +327,9 @@ export default function CheckoutScreen() {
             <View style={styles.successIconCircle}>
               <Ionicons name="checkmark" size={40} color={colors.background} />
             </View>
-            <Text style={styles.successTitle}>Thank you shopping with Closho! 🎉</Text>
+            <Text style={styles.successTitle}>Order placed 🎉</Text>
             <Text style={styles.successText}>
-              Your order has been successfully placed and will be delivered soon.
+              Your order has been successfully placed and will be arriving soon.
             </Text>
             <Button title="View My Orders" onPress={navigateToOrders} style={styles.successBtn} />
             <TouchableOpacity onPress={() => router.replace('/(tabs)')}>

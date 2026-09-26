@@ -1,14 +1,18 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, TextInput, LayoutAnimation, Platform, UIManager } from 'react-native';
-import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../src/theme/colors';
-import { typography } from '../../src/theme/typography';
-import { spacing } from '../../src/theme/spacing';
-import { Button } from '../../src/components/ui/Button';
 import * as Haptics from 'expo-haptics';
-import { useCartStore } from '../../src/store/cartStore';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Image, KeyboardAvoidingView, LayoutAnimation, Platform,
+  ScrollView, StyleSheet, Text, TextInput, TouchableOpacity,
+  UIManager, View,
+} from 'react-native';
+import { Button } from '../../src/components/ui/Button';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
+import { useCartStore } from '../../src/store/cartStore';
+import { colors } from '../../src/theme/colors';
+import { spacing } from '../../src/theme/spacing';
+import { typography } from '../../src/theme/typography';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -16,9 +20,76 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 
 export default function CartScreen() {
   const router = useRouter();
-  const { items, updateQuantity: storeUpdateQuantity, removeFromCart, getCartTotal, applyCoupon, discountAmount, clearCart } = useCartStore();
+  const {
+    items, updateQuantity: storeUpdateQuantity, removeFromCart,
+    getCartTotal, applyCoupon, discountAmount, clearCart, fetchCart,
+  } = useCartStore();
   const [couponCode, setCouponCode] = useState('');
   const { showSnackbar } = useSnackbar();
+
+  // Do not replace an existing local cart with an empty server response.
+  // The current backend request is using a different store ID than the active
+  // store, so fetching here would erase the item already present in Zustand.
+  useFocusEffect(
+    useCallback(() => {
+      console.log('[CART SCREEN] ===== SCREEN FOCUSED =====');
+
+      const currentItems = useCartStore.getState().items;
+
+      console.log('[CART SCREEN] Current items:', currentItems.length);
+
+      if (currentItems.length > 0) {
+        console.log(
+          '[CART SCREEN] Local cart already contains items. Skipping fetchCart() ' +
+          'to prevent an empty response from clearing the cart.'
+        );
+        console.log(
+          '[CART SCREEN] Preserved items:',
+          JSON.stringify(currentItems, null, 2)
+        );
+
+        return () => {
+          console.log('[CART SCREEN] ===== SCREEN BLURRED =====');
+        };
+      }
+
+      let cancelled = false;
+
+      const refresh = async () => {
+        try {
+          console.log('[CART SCREEN] Local cart is empty. Calling fetchCart()');
+
+          await fetchCart();
+
+          if (!cancelled) {
+            const latestItems = useCartStore.getState().items;
+
+            console.log(
+              '[CART SCREEN] fetchCart completed. Current item count:',
+              latestItems.length
+            );
+
+            console.log(
+              '[CART SCREEN] Current cart items:',
+              JSON.stringify(latestItems, null, 2)
+            );
+          }
+        } catch (error: any) {
+          console.error(
+            '[CART SCREEN] fetchCart FAILED:',
+            error?.message || error
+          );
+        }
+      };
+
+      refresh();
+
+      return () => {
+        cancelled = true;
+        console.log('[CART SCREEN] ===== SCREEN BLURRED =====');
+      };
+    }, [fetchCart]),
+  );
 
   const updateQuantity = (id: string, delta: number) => {
     Haptics.selectionAsync();
@@ -50,6 +121,17 @@ export default function CartScreen() {
     }
   };
 
+  useEffect(() => {
+    console.log('[CART SCREEN] ===== STATE UPDATED =====');
+    console.log('[CART SCREEN] items:', JSON.stringify(items.map((item) => ({
+      id: item.id, productId: item.productId, name: item.name, price: item.price,
+      quantity: item.quantity, image: item.image, storeId: item.storeId, variantId: item.variantId,
+    })), null, 2));
+    console.log('[CART SCREEN] item count:', items.length);
+    console.log('[CART SCREEN] total:', getCartTotal());
+    console.log('[CART SCREEN] discount:', discountAmount);
+  }, [items, getCartTotal, discountAmount]);
+
   if (items.length === 0) {
     return (
       <View style={[styles.container, styles.emptyContainer]}>
@@ -57,10 +139,12 @@ export default function CartScreen() {
           <Ionicons name="cart" size={60} color={colors.primary} />
         </View>
         <Text style={styles.emptyTitle}>Your cart is empty!</Text>
-        <Text style={styles.emptySubtitle}>Explore our wide range of products and find your next favorite outfit.</Text>
-        <Button 
-          title="Start Shopping" 
-          onPress={() => router.push('/(tabs)')} 
+        <Text style={styles.emptySubtitle}>
+          Explore our wide range of products and find your next favorite outfit.
+        </Text>
+        <Button
+          title="Start Shopping"
+          onPress={() => router.push('/(tabs)')}
           style={styles.shopBtn}
         />
       </View>
@@ -68,105 +152,121 @@ export default function CartScreen() {
   }
 
   const subtotal = getCartTotal();
-  const shipping = subtotal > 0 ? 5.00 : 0;
+  const shipping = subtotal > 0 ? 99 : 0;
   const total = Math.max(0, subtotal - discountAmount + shipping);
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.headerRow}>
-          <Text style={styles.headerTitle}>My Cart</Text>
-          <TouchableOpacity onPress={handleClearCart} style={styles.clearBtn}>
-            <Ionicons name="trash-outline" size={20} color={colors.status.error} />
-            <Text style={styles.clearBtnText}>Clear All</Text>
-          </TouchableOpacity>
-        </View>
-        
-        <View style={styles.itemsList}>
-          {items.map(item => (
-            <View key={item.id} style={styles.cartItem}>
-              <Image source={{ uri: item.image || 'https://via.placeholder.com/150' }} style={styles.itemImage} />
-              
-              <View style={styles.itemDetails}>
-                <View style={styles.itemHeader}>
-                  <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
-                  <TouchableOpacity onPress={() => removeItem(item.id)} style={styles.removeBtn}>
-                    <Ionicons name="trash-outline" size={20} color={colors.status.error} />
-                  </TouchableOpacity>
-                </View>
-                
-                <Text style={styles.itemVariant}>
-                  Size: {item.size} | Color: {item.colorName}
-                </Text>
-                
-                <View style={styles.itemFooter}>
-                  <Text style={styles.itemPrice}>₹{item.price.toFixed(2)}</Text>
-                  
-                  <View style={styles.stepper}>
-                    <TouchableOpacity style={styles.stepBtn} onPress={() => updateQuantity(item.id, -1)}>
-                      <Ionicons name="remove" size={16} color={colors.text.primary} />
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <View style={styles.container}>
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Header */}
+          <View style={styles.headerRow}>
+            <Text style={styles.headerTitle}>My Cart</Text>
+            <TouchableOpacity onPress={handleClearCart} style={styles.clearBtn}>
+              <Ionicons name="trash-outline" size={20} color={colors.status.error} />
+              <Text style={styles.clearBtnText}>Clear All</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Items */}
+          <View style={styles.itemsList}>
+            {items.map(item => (
+              <View key={item.id} style={styles.cartItem}>
+                {/* Product Image — show icon if no URL */}
+                {item.image ? (
+                  <Image
+                    source={{ uri: item.image }}
+                    style={styles.itemImage}
+                    onError={() => console.warn('[CART] Image load error for:', item.image)}
+                  />
+                ) : (
+                  <View style={[styles.itemImage, styles.itemImageFallback]}>
+                    <Ionicons name="shirt-outline" size={36} color={colors.text.tertiary} />
+                  </View>
+                )}
+
+                <View style={styles.itemDetails}>
+                  <View style={styles.itemHeader}>
+                    <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
+                    <TouchableOpacity onPress={() => removeItem(item.id)} style={styles.removeBtn}>
+                      <Ionicons name="trash-outline" size={20} color={colors.status.error} />
                     </TouchableOpacity>
-                    <Text style={styles.qtyText}>{item.quantity}</Text>
-                    <TouchableOpacity style={styles.stepBtn} onPress={() => updateQuantity(item.id, 1)}>
-                      <Ionicons name="add" size={16} color={colors.text.primary} />
-                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={styles.itemVariant}>
+                    Size: {item.size} | Color: {item.colorName}
+                  </Text>
+
+                  <View style={styles.itemFooter}>
+                    <Text style={styles.itemPrice}>₹{item.price.toFixed(2)}</Text>
+                    <View style={styles.stepper}>
+                      <TouchableOpacity style={styles.stepBtn} onPress={() => updateQuantity(item.id, -1)}>
+                        <Ionicons name="remove" size={16} color={colors.text.primary} />
+                      </TouchableOpacity>
+                      <Text style={styles.qtyText}>{item.quantity}</Text>
+                      <TouchableOpacity style={styles.stepBtn} onPress={() => updateQuantity(item.id, 1)}>
+                        <Ionicons name="add" size={16} color={colors.text.primary} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
               </View>
-            </View>
-          ))}
-        </View>
-
-        {/* Coupon */}
-        <View style={styles.couponContainer}>
-          <TextInput 
-            style={styles.couponInput}
-            placeholder="Apply Promo Code"
-            placeholderTextColor={colors.text.tertiary}
-            value={couponCode}
-            onChangeText={setCouponCode}
-            autoCapitalize="characters"
-          />
-          <TouchableOpacity style={styles.applyBtn} onPress={handleApplyCoupon}>
-            <Text style={styles.applyBtnText}>Apply</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Summary */}
-        <View style={styles.summaryContainer}>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Subtotal</Text>
-            <Text style={styles.summaryValue}>₹{subtotal.toFixed(2)}</Text>
+            ))}
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Shipping</Text>
-            <Text style={styles.summaryValue}>₹{shipping.toFixed(2)}</Text>
+
+          {/* Coupon */}
+          <View style={styles.couponContainer}>
+            <TextInput
+              style={styles.couponInput}
+              placeholder="Apply Promo Code"
+              placeholderTextColor={colors.text.tertiary}
+              value={couponCode}
+              onChangeText={setCouponCode}
+              autoCapitalize="characters"
+            />
+            <TouchableOpacity style={styles.applyBtn} onPress={handleApplyCoupon}>
+              <Text style={styles.applyBtnText}>Apply</Text>
+            </TouchableOpacity>
           </View>
-          {discountAmount > 0 && (
+
+          {/* Summary */}
+          <View style={styles.summaryContainer}>
             <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Discount</Text>
-              <Text style={[styles.summaryValue, { color: colors.status.success }]}>-₹{discountAmount.toFixed(2)}</Text>
+              <Text style={styles.summaryLabel}>Subtotal</Text>
+              <Text style={styles.summaryValue}>₹{subtotal.toFixed(2)}</Text>
             </View>
-          )}
-          <View style={styles.divider} />
-          <View style={styles.summaryRow}>
-            <Text style={styles.totalLabel}>Total</Text>
-            <Text style={styles.totalValue}>₹{total.toFixed(2)}</Text>
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Shipping</Text>
+              <Text style={styles.summaryValue}>₹{shipping.toFixed(2)}</Text>
+            </View>
+            {discountAmount > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Discount</Text>
+                <Text style={[styles.summaryValue, { color: colors.status.success }]}>
+                  -₹{discountAmount.toFixed(2)}
+                </Text>
+              </View>
+            )}
+            <View style={styles.divider} />
+            <View style={styles.summaryRow}>
+              <Text style={styles.totalLabel}>Total</Text>
+              <Text style={styles.totalValue}>₹{total.toFixed(2)}</Text>
+            </View>
           </View>
-        </View>
-      </ScrollView>
+        </ScrollView>
 
-      {/* Checkout Button */}
-      <View style={styles.footer}>
-        <Button 
-          title="Proceed to Checkout" 
-          onPress={() => {
-            Haptics.impactAsync();
-            router.push('/checkout');
-          }}
-        />
+        {/* Sticky Checkout Button */}
+        <View style={styles.footer}>
+          <Button
+            title="Proceed to Checkout"
+            onPress={() => {
+              Haptics.impactAsync();
+              router.push('/checkout');
+            }}
+          />
+        </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -211,7 +311,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: spacing.md,
     paddingTop: spacing.lg,
-    paddingBottom: 220,
+    paddingBottom: 150, // keeps the last cart content above the checkout bar
   },
   headerRow: {
     flexDirection: 'row',
@@ -252,6 +352,10 @@ const styles = StyleSheet.create({
     height: 110,
     borderRadius: 12,
     backgroundColor: colors.surfaceLight,
+  },
+  itemImageFallback: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   itemDetails: {
     flex: 1,
@@ -373,18 +477,20 @@ const styles = StyleSheet.create({
   },
   footer: {
     position: 'absolute',
-    bottom: 95,
+    // Tab bar: bottom=24, height=70 → top edge at 94px from bottom
+    // Add 8px gap so checkout sits neatly above it
+    bottom: 102,
     left: 0,
     right: 0,
-    padding: spacing.xl,
-    paddingBottom: Platform.OS === 'ios' ? spacing.xl : spacing.xl,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
     backgroundColor: colors.surface,
     borderTopWidth: 1,
     borderTopColor: colors.borderLight,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    elevation: 20,
-  }
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 12,
+  },
 });

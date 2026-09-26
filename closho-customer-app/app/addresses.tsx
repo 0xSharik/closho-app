@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Modal, TextInput, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Modal, TextInput, ActivityIndicator, Alert, KeyboardAvoidingView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { colors } from '../src/theme/colors';
@@ -11,9 +11,10 @@ import { useProfileStore } from '../src/store/profileStore';
 
 export default function AddressesScreen() {
   const router = useRouter();
-  const { addresses, isLoading, fetchAddresses, addAddress, removeAddress, setDefaultAddress } = useProfileStore();
+  const { addresses, isLoading, fetchAddresses, addAddress, updateAddress, removeAddress, setDefaultAddress } = useProfileStore();
   const [isModalVisible, setModalVisible] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   
   const [newType, setNewType] = useState('home');
   const [formData, setFormData] = useState({
@@ -35,7 +36,23 @@ export default function AddressesScreen() {
     router.back();
   };
 
-  const handleAddAddress = async () => {
+  const handleEdit = (addr: any) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setEditingId(addr.id);
+    setNewType(addr.type);
+    setFormData({
+      fullName: addr.fullName,
+      phone: addr.phone.replace('+91', ''),
+      addressLine1: addr.addressLine1,
+      addressLine2: addr.addressLine2 || '',
+      city: addr.city,
+      state: addr.state,
+      pincode: addr.pincode
+    });
+    setModalVisible(true);
+  };
+
+  const handleSaveAddress = async () => {
     if (!formData.fullName || !formData.phone || !formData.addressLine1 || !formData.city || !formData.state || !formData.pincode) {
       Alert.alert('Error', 'Please fill all mandatory fields');
       return;
@@ -44,21 +61,30 @@ export default function AddressesScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsSubmitting(true);
     
-    const res = await addAddress({
-      ...formData,
-      type: newType,
-      isDefault: addresses.length === 0
-    });
+    let res;
+    if (editingId) {
+      res = await updateAddress(editingId, {
+        ...formData,
+        type: newType
+      });
+    } else {
+      res = await addAddress({
+        ...formData,
+        type: newType,
+        isDefault: addresses.length === 0
+      });
+    }
     
     setIsSubmitting(false);
     
     if (res.success) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setModalVisible(false);
+      setEditingId(null);
       setFormData({ fullName: '', phone: '', addressLine1: '', addressLine2: '', city: '', state: '', pincode: '' });
     } else {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Error', res.message || 'Failed to add address');
+      Alert.alert('Error', res.message || 'Failed to save address');
     }
   };
 
@@ -126,6 +152,9 @@ export default function AddressesScreen() {
                     <Text style={styles.actionText}>Make Default</Text>
                   </TouchableOpacity>
                 )}
+                <TouchableOpacity style={styles.actionBtn} onPress={() => handleEdit(addr)}>
+                  <Text style={styles.actionText}>Edit</Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={styles.actionBtn} onPress={() => handleDelete(addr.id)}>
                   <Text style={[styles.actionText, { color: colors.status.error }]}>Delete</Text>
                 </TouchableOpacity>
@@ -138,16 +167,26 @@ export default function AddressesScreen() {
       <View style={styles.footer}>
         <Button 
           title="Add New Address" 
-          onPress={() => { Haptics.impactAsync(); setModalVisible(true); }} 
+          onPress={() => { 
+            Haptics.impactAsync(); 
+            setEditingId(null);
+            setFormData({ fullName: '', phone: '', addressLine1: '', addressLine2: '', city: '', state: '', pincode: '' });
+            setNewType('home');
+            setModalVisible(true); 
+          }} 
         />
       </View>
 
       <Modal visible={isModalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add New Address</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.closeBtn}>
+              <Text style={styles.modalTitle}>{editingId ? 'Edit Address' : 'Add New Address'}</Text>
+              <TouchableOpacity onPress={() => {
+                setModalVisible(false);
+                setEditingId(null);
+                setFormData({ fullName: '', phone: '', addressLine1: '', addressLine2: '', city: '', state: '', pincode: '' });
+              }} style={styles.closeBtn}>
                 <Ionicons name="close" size={24} color={colors.text.primary} />
               </TouchableOpacity>
             </View>
@@ -169,7 +208,7 @@ export default function AddressesScreen() {
               <TextInput style={styles.textInput} value={formData.fullName} onChangeText={t => setFormData({...formData, fullName: t})} />
               
               <Text style={styles.inputLabel}>Phone</Text>
-              <TextInput style={styles.textInput} keyboardType="phone-pad" value={formData.phone} onChangeText={t => setFormData({...formData, phone: t})} />
+              <TextInput style={styles.textInput} keyboardType="phone-pad" placeholder="10-digit mobile number" placeholderTextColor={colors.text.tertiary} maxLength={10} value={formData.phone} onChangeText={t => setFormData({...formData, phone: t.replace(/[^0-9]/g, '').slice(0, 10)})} />
               
               <Text style={styles.inputLabel}>Address Line 1</Text>
               <TextInput style={styles.textInput} value={formData.addressLine1} onChangeText={t => setFormData({...formData, addressLine1: t})} />
@@ -194,12 +233,12 @@ export default function AddressesScreen() {
               <Button 
                 title={isSubmitting ? "Saving..." : "Save Address"} 
                 disabled={isSubmitting}
-                onPress={handleAddAddress} 
+                onPress={handleSaveAddress} 
                 style={{ marginTop: spacing.xl, marginBottom: spacing.xl }} 
               />
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

@@ -4,12 +4,19 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { AuthState, User } from '../types/auth.types';
 
 interface AuthStore extends AuthState {
+  pendingPhone: string | null;
+  pendingEmail: string | null;
+  pendingOtp: string | null;
+  otpFlowUsed: 'phone_verification' | 'password_reset' | 'registration' | null;
   setAuth: (user: User, token: string) => Promise<void>;
   login: (emailOrPhone: string, password: string) => Promise<{ success: boolean; error?: string }>;
   googleLogin: (idToken: string) => Promise<{ success: boolean; error?: string }>;
-  sendOtp: (phone: string) => Promise<{ success: boolean; error?: string }>;
-  verifyOtp: (phone: string, otp: string) => Promise<{ success: boolean; error?: string }>;
+  sendOtp: (phone: string) => Promise<{ success: boolean; error?: string; errorCode?: string }>;
+  verifyOtp: (phone: string, otp: string) => Promise<{ success: boolean; error?: string; resetToken?: string; directReset?: boolean }>;
+  verifyRegistrationOtp: (email: string, otp: string) => Promise<{ success: boolean; error?: string }>;
+  resendRegistrationOtp: () => Promise<{ success: boolean; error?: string }>;
   register: (fullName: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  setPendingPhone: (phone: string) => void;
   updateUser: (userData: Partial<User>) => Promise<{ success: boolean; message?: string }>;
   fetchProfile: () => Promise<void>;
   logout: () => Promise<void>;
@@ -60,6 +67,10 @@ export const useAuthStore = create<AuthStore>()(
       isAuthenticated: false,
       isLoading: false,
       error: null,
+      otpFlowUsed: null as ('phone_verification' | 'password_reset' | 'registration' | null),
+      pendingOtp: null as string | null,
+      pendingPhone: null as string | null,
+      pendingEmail: null as string | null,
 
       setAuth: async (user: User, token: string) => {
         try {
@@ -77,7 +88,13 @@ export const useAuthStore = create<AuthStore>()(
         try {
           // Import here to avoid circular dependencies if needed, or import at top
           const api = require('../services/api').default;
-          const response = await api.post('/auth/login', { email: emailOrPhone, password });
+          const payload = {
+            emailOrPhone,
+            password,
+            rememberMe: true,
+          };
+
+          const response = await api.post('/auth/login', payload);
           console.log('[AUTH DEBUG] LOGIN RESPONSE');
           console.log('[AUTH DEBUG] status:', response.status);
           console.log('[AUTH DEBUG] success:', response.data?.success);
@@ -128,198 +145,382 @@ export const useAuthStore = create<AuthStore>()(
 
       sendOtp: async (phone: string) => {
         set({ isLoading: true, error: null });
-        console.log('[AUTH DEBUG] ===== SEND OTP START =====');
-        console.log('[AUTH DEBUG] phoneProvided:', !!phone);
-        console.log('[AUTH DEBUG] endpoint: /auth/send-verification-otp');
-        console.log('[AUTH DEBUG] purpose: phone_verification');
+
         try {
           const api = require('../services/api').default;
+          let normalizedPhone = phone.replace(/\s+/g, '');
 
-          // Step 1: Try sending verification OTP for phone
+          if (/^\d{10}$/.test(normalizedPhone)) normalizedPhone = `+91${normalizedPhone}`;
+          else if (/^\d{12}$/.test(normalizedPhone)) normalizedPhone = `+${normalizedPhone}`;
+
+          set({
+            pendingPhone: normalizedPhone,
+            pendingEmail: null,
+            pendingOtp: null,
+          });
+
+          console.log('[AUTH DEBUG] ===== SEND OTP START =====');
+          console.log('[AUTH DEBUG] normalizedPhone:', normalizedPhone);
+
+          /*
+           * Normal phone OTP login / verification.
+           * If the backend says the phone is already verified (409),
+           * do NOT treat that as a fatal error. An already-verified
+           * account must go through the existing password-reset flow.
+           */
           try {
-            const response = await api.post('/auth/send-verification-otp', { phone });
-            console.log('[AUTH DEBUG] SEND OTP RESPONSE');
-            console.log('[AUTH DEBUG] status:', response.status);
-            console.log('[AUTH DEBUG] success:', response.data?.success);
-            console.log('[AUTH DEBUG] responseKeys:', Object.keys(response.data || {}));
+            const response = await api.post('/auth/send-verification-otp', {
+              phone: normalizedPhone,
+            });
+
+            console.log('[AUTH DEBUG] SEND VERIFICATION OTP status:', response.status);
+
             if (response.data?.success) {
-              set({ isLoading: false });
+              set({
+                isLoading: false,
+                otpFlowUsed: 'phone_verification',
+                pendingPhone: normalizedPhone,
+              });
+
               return { success: true };
             }
           } catch (sendErr: any) {
-            const errStatus = sendErr.response?.status;
-            console.log('[AUTH DEBUG] SEND OTP RESPONSE');
-            console.log('[AUTH DEBUG] status:', errStatus);
-            console.log('[AUTH DEBUG] success: false');
-            if (errStatus === 409) {
-              console.log('[AUTH DEBUG] SEND OTP RESULT: PHONE_ALREADY_VERIFIED');
-              console.log('[AUTH DEBUG] switchingToPasswordResetFlow: true');
+            const status = sendErr.response?.status;
+            const errorCode = sendErr.response?.data?.errorCode;
+            const errorMsg =
+              sendErr.response?.data?.message ||
+              sendErr.message ||
+              'Failed to send OTP. Please try again.';
+
+            console.log('[AUTH DEBUG] SEND PHONE OTP ERROR:', {
+              status,
+              errorCode,
+              message: errorMsg,
+            });
+
+            // Unknown/unregistered phone: preserve the existing registration flow.
+            if (status === 404 || errorCode === 'USER_NOT_FOUND') {
+              set({
+                isLoading: false,
+                error: errorMsg,
+                pendingPhone: normalizedPhone,
+                otpFlowUsed: null,
+              });
+
+              return {
+                success: false,
+                error: errorMsg,
+                errorCode: 'USER_NOT_FOUND',
+              };
             }
-            console.log('[AUTH DEBUG] ===== PASSWORD RESET OTP START =====');
-            console.log('[AUTH DEBUG] endpoint: /auth/forgot-password');
+
+            // Already verified is NOT an error for this OTP-login flow.
+            // Continue into the existing password-reset flow below.
+            if (status !== 409) {
+              set({ isLoading: false, error: errorMsg });
+
+              return {
+                success: false,
+                error: errorMsg,
+                errorCode,
+              };
+            }
+
+            console.log(
+              '[AUTH DEBUG] Phone is already verified -> continuing with password-reset OTP flow.'
+            );
           }
 
-          // Step 2: Fallback to forgot-password OTP
+          /*
+           * Existing verified phone:
+           * use the existing forgot-password endpoint to issue the OTP.
+           *
+           * The backend implementation currently used by the app accepts
+           * the phone here. If it returns the associated email, retain it
+           * because /auth/verify-otp uses email for password_reset.
+           */
           try {
-            const response = await api.post('/auth/forgot-password', { phone });
-            console.log('[AUTH DEBUG] PASSWORD RESET OTP RESPONSE');
-            console.log('[AUTH DEBUG] status:', response.status);
-            console.log('[AUTH DEBUG] success:', response.data?.success);
-            console.log('[AUTH DEBUG] responseKeys:', Object.keys(response.data || {}));
+            const response = await api.post('/auth/forgot-password', {
+              phone: normalizedPhone,
+            });
+
+            console.log(
+              '[AUTH DEBUG] /auth/forgot-password status:',
+              response.status
+            );
+            console.log(
+              '[AUTH DEBUG] /auth/forgot-password response:',
+              JSON.stringify(response.data)
+            );
+
             if (response.data?.success) {
-              set({ isLoading: false });
+              const responseData =
+                response.data?.data?.data ||
+                response.data?.data ||
+                {};
+
+              const email =
+                responseData.email ||
+                responseData.user?.email ||
+                responseData.account?.email ||
+                null;
+
+              set({
+                isLoading: false,
+                otpFlowUsed: 'password_reset',
+                pendingPhone: normalizedPhone,
+                pendingEmail: email,
+                pendingOtp: null,
+                error: null,
+              });
+
+              console.log(
+                '[AUTH DEBUG] VERIFIED PHONE -> PASSWORD RESET FLOW',
+                {
+                  phone: normalizedPhone,
+                  email: email || 'not returned by backend',
+                }
+              );
+
               return { success: true };
             }
-          } catch (forgotErr: any) {
-            console.log('[AUTH DEBUG] PASSWORD RESET OTP RESPONSE');
-            console.log('[AUTH DEBUG] status:', forgotErr.response?.status);
-            console.log('[AUTH DEBUG] success: false');
-          }
 
-          // If backend SMS service returns 500 or is unconfigured, proceed gracefully to OTP entry
-          console.warn('[AUTH DEBUG] Both backend OTP endpoints failed. Enabling fallback OTP entry.');
-          set({ isLoading: false, error: null });
-          return { success: true };
+            const errorMsg =
+              response.data?.message ||
+              'Unable to send password reset OTP. Please try again.';
+
+            set({ isLoading: false, error: errorMsg });
+
+            return { success: false, error: errorMsg };
+          } catch (resetOtpErr: any) {
+            const status = resetOtpErr.response?.status;
+            const errorCode = resetOtpErr.response?.data?.errorCode;
+            const errorMsg =
+              resetOtpErr.response?.data?.message ||
+              resetOtpErr.message ||
+              'Unable to send password reset OTP. Please try again.';
+
+            console.log('[AUTH DEBUG] PASSWORD RESET OTP ERROR:', {
+              status,
+              errorCode,
+              message: errorMsg,
+            });
+
+            set({
+              isLoading: false,
+              error: errorMsg,
+              otpFlowUsed: null,
+            });
+
+            return {
+              success: false,
+              error: errorMsg,
+              errorCode,
+            };
+          }
         } catch (error: any) {
-          console.warn('[AUTH DEBUG] Send OTP outer error:', error.message || error);
-          set({ isLoading: false, error: null });
-          return { success: true };
+          const status = error.response?.status;
+          const errorCode = error.response?.data?.errorCode;
+          const errorMsg =
+            error.response?.data?.message ||
+            error.message ||
+            'Failed to send OTP. Please try again.';
+
+          console.log('[AUTH DEBUG] SEND OTP ERROR:', {
+            status,
+            errorCode,
+            message: errorMsg,
+          });
+
+          set({ isLoading: false, error: errorMsg });
+
+          return {
+            success: false,
+            error: errorMsg,
+            errorCode,
+          };
         }
       },
 
       verifyOtp: async (phone: string, otp: string) => {
-        set({ isLoading: true, error: null });
+        set({
+          isLoading: true,
+          error: null,
+          pendingOtp: otp,
+          pendingPhone: phone,
+        });
+
         console.log('[AUTH DEBUG] ===== VERIFY OTP START =====');
-        console.log('[AUTH DEBUG] otpProvided:', !!otp);
+
         try {
           const api = require('../services/api').default;
+          const otpFlowUsed = get().otpFlowUsed;
 
-          // Helper to extract and store auth data from backend response
-          // Returns: { success: true } for login, { success: true, resetToken } for password_reset,
-          //          or null if response does not match either shape.
-          const handleAuthResponse = async (resData: any, purpose: string) => {
-            const data = resData.data || resData;
-            const accessToken = data.accessToken || data.token || resData.token;
-            const resetToken = data.resetToken;
+          // Existing verified phone -> forgot-password OTP.
+          // The API contract requires email for verify-otp, so use the email
+          // returned by /auth/forgot-password instead of sending phone here.
+          if (otpFlowUsed === 'password_reset') {
+            const email = get().pendingEmail;
 
-            console.log('[AUTH DEBUG] ===== CLASSIFY AUTH RESPONSE =====');
-            console.log('[AUTH DEBUG] purpose:', purpose);
-            console.log('[AUTH DEBUG] dataKeys:', Object.keys(data || {}));
-            console.log('[AUTH DEBUG] hasAccessToken:', !!accessToken);
-            console.log('[AUTH DEBUG] hasResetToken:', !!resetToken);
-            console.log('[AUTH DEBUG] isAuthenticatedBefore:', get().isAuthenticated);
+            if (!email) {
+              const errorMsg =
+                'The account email was not returned by the server. Please restart the OTP login flow.';
+              set({ isLoading: false, error: errorMsg });
+              return { success: false, error: errorMsg };
+            }
 
-            if (accessToken) {
-              console.log('[AUTH DEBUG] responseType: LOGIN');
-              console.log('[AUTH DEBUG] action: STORE_ACCESS_TOKEN');
-              const refreshToken = data.refreshToken || resData.refreshToken || null;
-              const sessionId = data.sessionId || resData.sessionId || null;
+            const result = await get().verifyPasswordResetOtp(email, otp);
+
+            if (!result.success) {
+              set({ isLoading: false, error: result.error || 'Invalid OTP' });
+              return result;
+            }
+
+            return result;
+          }
+
+          // Registration is verified by verifyRegistrationOtp(), because the
+          // API contract requires email + purpose=registration.
+          if (otpFlowUsed === 'registration') {
+            const email = get().pendingEmail;
+
+            if (!email) {
+              const errorMsg = 'Registration email is missing. Please restart registration.';
+              set({ isLoading: false, error: errorMsg });
+              return { success: false, error: errorMsg };
+            }
+
+            return await get().verifyRegistrationOtp(email, otp);
+          }
+
+          // Preserve the existing phone-verification flow for the backend
+          // endpoint currently used by the app.
+          try {
+            const response = await api.post('/auth/verify-otp', {
+              phone,
+              otp,
+              purpose: 'phone_verification',
+            });
+
+            console.log('[AUTH DEBUG] phone_verification status:', response.status);
+
+            if (response.data?.success) {
+              const data = response.data?.data || {};
+              const accessToken = data.accessToken || data.token;
+
+              if (!accessToken) {
+                const errorMsg =
+                  'OTP verified but the server did not return an access token.';
+                set({ isLoading: false, error: errorMsg });
+                return { success: false, error: errorMsg };
+              }
+
               const user = data.user || {
                 id: data.userId || 'usr_otp',
                 name: data.fullName || data.name || '',
-                phone: phone,
-                role: 'customer'
+                phone,
+                role: 'customer',
               };
+
               set({
                 user,
                 token: accessToken,
-                refreshToken,
-                sessionId,
+                refreshToken: data.refreshToken || null,
+                sessionId: data.sessionId || null,
                 isAuthenticated: true,
                 error: null,
-                isLoading: false
+                isLoading: false,
+                pendingOtp: null,
               });
-              console.log('[AUTH DEBUG] ===== ACCESS TOKEN STORAGE =====');
-              console.log('[AUTH DEBUG] tokenExists: true');
-              console.log('[AUTH DEBUG] tokenLength:', accessToken.length);
-              console.log('[AUTH DEBUG] tokenStored: true');
-              console.log('[AUTH DEBUG] isAuthenticated: true');
+
               try {
                 const profileRes = await api.get('/auth/me');
                 if (profileRes.data?.data) {
                   set({ user: profileRes.data.data });
                 }
-              } catch (_) { }
+              } catch (_) {
+                // Profile fetch is optional after successful authentication.
+              }
+
               return { success: true };
             }
-
-            if (resetToken) {
-              // Password reset flow: do NOT authenticate the user.
-              // Return the resetToken to the UI for navigation to reset-password screen.
-              console.log('[AUTH DEBUG] responseType: PASSWORD_RESET');
-              console.log('[AUTH DEBUG] action: RETURN_RESET_TOKEN');
-              console.log('[AUTH DEBUG] ===== RESET TOKEN HANDOFF =====');
-              console.log('[AUTH DEBUG] resetTokenExists: true');
-              console.log('[AUTH DEBUG] resetTokenLength:', resetToken.length);
-              console.log('[AUTH DEBUG] storedAsAccessToken: false');
-              console.log('[AUTH DEBUG] isAuthenticated: false');
-              console.log('[AUTH DEBUG] action: NAVIGATE_TO_RESET_PASSWORD');
-              set({ isLoading: false });
-              return { success: true, resetToken };
-            }
-
-            // Response had success:true but neither accessToken nor resetToken — unexpected shape.
-            console.warn('[AUTH DEBUG] CLASSIFY AUTH RESPONSE: unrecognised response shape, no token found.');
-            return null;
-          };
-
-          // Attempt 1: phone_verification purpose
-          console.log('[AUTH DEBUG] purpose: phone_verification');
-          console.log('[AUTH DEBUG] endpoint: /auth/verify-otp');
-          try {
-            const response = await api.post('/auth/verify-otp', { phone, otp, purpose: 'phone_verification' });
-            console.log('[AUTH DEBUG] VERIFY OTP RESPONSE');
-            console.log('[AUTH DEBUG] status:', response.status);
-            console.log('[AUTH DEBUG] success:', response.data?.success);
-            console.log('[AUTH DEBUG] dataKeys:', Object.keys(response.data?.data || {}));
-            console.log('[AUTH DEBUG] hasAccessToken:', !!(response.data?.data?.accessToken || response.data?.data?.token));
-            console.log('[AUTH DEBUG] hasResetToken:', !!(response.data?.data?.resetToken));
-            if (response.data?.success) {
-              const authResult = await handleAuthResponse(response.data, 'phone_verification');
-              if (authResult) return authResult;
-            }
           } catch (phoneErr: any) {
-            console.log('[AUTH DEBUG] VERIFY OTP RESPONSE');
-            console.log('[AUTH DEBUG] purpose: phone_verification');
-            console.log('[AUTH DEBUG] status:', phoneErr.response?.status);
-            console.log('[AUTH DEBUG] success: false');
-            console.log('[AUTH DEBUG] error:', phoneErr.response?.data?.message || phoneErr.message);
-          }
+            const errorMsg =
+              phoneErr.response?.data?.message ||
+              phoneErr.message ||
+              'Invalid OTP';
 
-          // Attempt 2: password_reset purpose (fallback for already-verified phones)
-          console.log('[AUTH DEBUG] purpose: password_reset');
-          console.log('[AUTH DEBUG] endpoint: /auth/verify-otp');
-          try {
-            const response = await api.post('/auth/verify-otp', { phone, otp, purpose: 'password_reset' });
-            console.log('[AUTH DEBUG] VERIFY OTP RESPONSE');
-            console.log('[AUTH DEBUG] status:', response.status);
-            console.log('[AUTH DEBUG] success:', response.data?.success);
-            console.log('[AUTH DEBUG] dataKeys:', Object.keys(response.data?.data || {}));
-            console.log('[AUTH DEBUG] hasAccessToken:', !!(response.data?.data?.accessToken || response.data?.data?.token));
-            console.log('[AUTH DEBUG] hasResetToken:', !!(response.data?.data?.resetToken));
-            if (response.data?.success) {
-              const authResult = await handleAuthResponse(response.data, 'password_reset');
-              if (authResult) return authResult;
-            }
-          } catch (resetErr: any) {
-            console.log('[AUTH DEBUG] VERIFY OTP RESPONSE');
-            console.log('[AUTH DEBUG] purpose: password_reset');
-            console.log('[AUTH DEBUG] status:', resetErr.response?.status);
-            console.log('[AUTH DEBUG] success: false');
-            console.log('[AUTH DEBUG] error:', resetErr.response?.data?.message || resetErr.message);
-            const errorMsg = resetErr.response?.data?.message || resetErr.message || 'Invalid OTP';
+            console.log('[AUTH DEBUG] phone_verification failed:', {
+              status: phoneErr.response?.status,
+              errorCode: phoneErr.response?.data?.errorCode,
+              message: errorMsg,
+            });
+
             set({ isLoading: false, error: errorMsg });
             return { success: false, error: errorMsg };
           }
 
-          // Both attempts returned a successful HTTP response but no usable token — surface as failure.
-          const fallbackError = 'OTP verification did not return a valid session. Please try again.';
-          console.warn('[AUTH DEBUG] VERIFY OTP: success:true received but no token extracted. Returning failure.');
-          set({ isLoading: false, error: fallbackError });
-          return { success: false, error: fallbackError };
+          const errorMsg = 'OTP verification failed. Please try again.';
+          set({ isLoading: false, error: errorMsg });
+          return { success: false, error: errorMsg };
         } catch (error: any) {
-          console.warn('[AUTH DEBUG] Verify OTP outer error:', error.message || error);
-          const errorMsg = error.response?.data?.message || error.message || 'Verification failed';
+          const errorMsg =
+            error.response?.data?.message ||
+            error.message ||
+            'Verification failed';
+
+          console.warn('[AUTH DEBUG] Verify OTP error:', errorMsg);
+          set({ isLoading: false, error: errorMsg });
+          return { success: false, error: errorMsg };
+        }
+      },
+
+      verifyRegistrationOtp: async (email: string, otp: string) => {
+        set({ isLoading: true, error: null });
+
+        try {
+          const api = require('../services/api').default;
+
+          console.log('[AUTH DEBUG] ===== VERIFY REGISTRATION OTP START =====');
+
+          const response = await api.post('/auth/verify-otp', {
+            email,
+            otp,
+            purpose: 'registration',
+          });
+
+          console.log('[AUTH DEBUG] registration OTP status:', response.status);
+          console.log('[AUTH DEBUG] registration OTP success:', response.data?.success);
+
+          if (response.data?.success) {
+            console.log('[AUTH DEBUG] REGISTRATION OTP VERIFY SUCCESS');
+            console.log('[AUTH DEBUG] Account verification completed.');
+
+            set({
+              isLoading: false,
+              error: null,
+              otpFlowUsed: null,
+              pendingOtp: null,
+            });
+
+            return { success: true };
+          }
+
+          const errorMsg = response.data?.message || 'Invalid registration OTP.';
+          set({ isLoading: false, error: errorMsg });
+          return { success: false, error: errorMsg };
+        } catch (error: any) {
+          const errorMsg =
+            error.response?.data?.message ||
+            error.message ||
+            'Registration OTP verification failed.';
+
+          console.warn('[AUTH DEBUG] Registration OTP error:', {
+            status: error.response?.status,
+            errorCode: error.response?.data?.errorCode,
+            message: errorMsg,
+          });
+
           set({ isLoading: false, error: errorMsg });
           return { success: false, error: errorMsg };
         }
@@ -327,39 +528,204 @@ export const useAuthStore = create<AuthStore>()(
 
       sendPasswordResetOtp: async (email: string) => {
         set({ isLoading: true, error: null });
+
+        console.log('[AUTH DEBUG] ===== PASSWORD RESET OTP SEND START =====');
+        console.log('[AUTH DEBUG] endpoint: /auth/forgot-password');
+        console.log('[AUTH DEBUG] email:', email);
+
         try {
           const api = require('../services/api').default;
+
+          console.log('[AUTH DEBUG] PASSWORD RESET OTP REQUEST START');
+
           const response = await api.post('/auth/forgot-password', { email });
-          if (response.data.success) {
-            set({ isLoading: false });
+
+          console.log('[AUTH DEBUG] PASSWORD RESET OTP RESPONSE');
+          console.log('[AUTH DEBUG] status:', response.status);
+          console.log('[AUTH DEBUG] success:', response.data?.success);
+          console.log('[AUTH DEBUG] response:', JSON.stringify(response.data));
+
+          if (response.data?.success) {
+            set({
+              isLoading: false,
+              otpFlowUsed: 'password_reset',
+              pendingEmail: email,
+            });
+
+            console.log('[AUTH DEBUG] PASSWORD RESET OTP STATE SAVED');
+            console.log('[AUTH DEBUG] otpFlowUsed:', 'password_reset');
+            console.log('[AUTH DEBUG] pendingEmail:', email);
+
             return { success: true };
-          } else {
-            set({ error: response.data.message || 'Failed to send OTP', isLoading: false });
-            return { success: false, error: response.data.message };
           }
+
+          const errorMsg = response.data?.message || 'Failed to send OTP';
+
+          console.log('[AUTH DEBUG] PASSWORD RESET OTP SEND FAILED:', errorMsg);
+
+          set({ error: errorMsg, isLoading: false });
+          return { success: false, error: errorMsg };
         } catch (error: any) {
-          console.warn('Send Password Reset OTP error', error.message || error);
-          const errorMsg = error.response?.data?.message || error.message || 'Failed to send OTP';
+          const errorMsg =
+            error.response?.data?.message ||
+            error.message ||
+            'Failed to send OTP';
+
+          console.log('[AUTH DEBUG] PASSWORD RESET OTP SEND ERROR:', {
+            status: error.response?.status,
+            errorCode: error.response?.data?.errorCode,
+            message: errorMsg,
+          });
+
           set({ error: errorMsg, isLoading: false });
           return { success: false, error: errorMsg };
         }
       },
 
-      verifyPasswordResetOtp: async (email: string, otp: string) => {
+      resendRegistrationOtp: async () => {
         set({ isLoading: true, error: null });
+
+        console.log('[AUTH DEBUG] ===== REGISTRATION OTP RESEND START =====');
+
         try {
           const api = require('../services/api').default;
-          const response = await api.post('/auth/verify-otp', { email, otp, purpose: 'password_reset' });
-          if (response.data.success) {
-            set({ isLoading: false });
-            return { success: true, resetToken: response.data.data.resetToken || response.data.data };
-          } else {
-            set({ error: response.data.message || 'Invalid OTP', isLoading: false });
-            return { success: false, error: response.data.message };
+          const pendingPhone = get().pendingPhone;
+          const pendingEmail = get().pendingEmail;
+
+          console.log('[AUTH DEBUG] registration resend pendingPhone:', pendingPhone);
+          console.log('[AUTH DEBUG] registration resend pendingEmail:', pendingEmail);
+
+          if (!pendingPhone) {
+            const errorMsg =
+              'Mobile number is missing. Please restart registration.';
+
+            console.log('[AUTH DEBUG] REGISTRATION OTP RESEND BLOCKED:', errorMsg);
+
+            set({ isLoading: false, error: errorMsg });
+            return { success: false, error: errorMsg };
           }
+
+          console.log('[AUTH DEBUG] endpoint: /auth/send-verification-otp');
+          console.log('[AUTH DEBUG] registration resend phone:', pendingPhone);
+
+          const response = await api.post('/auth/send-verification-otp', {
+            phone: pendingPhone,
+          });
+
+          console.log('[AUTH DEBUG] REGISTRATION OTP RESEND RESPONSE');
+          console.log('[AUTH DEBUG] status:', response.status);
+          console.log('[AUTH DEBUG] success:', response.data?.success);
+          console.log('[AUTH DEBUG] response:', JSON.stringify(response.data));
+
+          if (response.data?.success) {
+            set({
+              isLoading: false,
+              otpFlowUsed: 'registration',
+              pendingPhone,
+              pendingEmail,
+              pendingOtp: null,
+              error: null,
+            });
+
+            console.log('[AUTH DEBUG] REGISTRATION OTP RESEND SUCCESS');
+            console.log('[AUTH DEBUG] otpFlowUsed:', 'registration');
+
+            return { success: true };
+          }
+
+          const errorMsg =
+            response.data?.message ||
+            'Failed to resend registration OTP.';
+
+          console.log('[AUTH DEBUG] REGISTRATION OTP RESEND FAILED:', errorMsg);
+
+          set({ isLoading: false, error: errorMsg });
+          return { success: false, error: errorMsg };
         } catch (error: any) {
-          console.warn('Verify Password Reset OTP error', error.message || error);
-          const errorMsg = error.response?.data?.message || error.message || 'Verification failed';
+          const errorMsg =
+            error.response?.data?.message ||
+            error.message ||
+            'Failed to resend registration OTP.';
+
+          console.log('[AUTH DEBUG] REGISTRATION OTP RESEND ERROR:', {
+            status: error.response?.status,
+            errorCode: error.response?.data?.errorCode,
+            message: errorMsg,
+          });
+
+          set({ isLoading: false, error: errorMsg });
+          return { success: false, error: errorMsg };
+        }
+      },
+
+      verifyPasswordResetOtp: async (email: string, otp: string) => {
+        set({ isLoading: true, error: null, pendingOtp: otp });
+
+        console.log('[AUTH DEBUG] ===== PASSWORD RESET OTP VERIFY START =====');
+        console.log('[AUTH DEBUG] endpoint: /auth/verify-otp');
+        console.log('[AUTH DEBUG] email:', email);
+        console.log('[AUTH DEBUG] otpLength:', otp?.length);
+
+        try {
+          const api = require('../services/api').default;
+
+          const response = await api.post('/auth/verify-otp', {
+            email,
+            otp,
+            purpose: 'password_reset',
+          });
+
+          console.log('[AUTH DEBUG] PASSWORD RESET OTP VERIFY RESPONSE');
+          console.log('[AUTH DEBUG] status:', response.status);
+          console.log('[AUTH DEBUG] success:', response.data?.success);
+          console.log('[AUTH DEBUG] response:', JSON.stringify(response.data));
+
+          if (response.data?.success) {
+            set({
+              isLoading: false,
+              pendingOtp: otp,
+              pendingEmail: email,
+              otpFlowUsed: 'password_reset',
+            });
+
+            const resetToken = response.data.data?.resetToken || null;
+
+            console.log('[AUTH DEBUG] resetTokenReceived:', !!resetToken);
+            console.log('[AUTH DEBUG] otpFlowUsed:', 'password_reset');
+
+            if (!resetToken) {
+              const errorMsg =
+                'OTP verified but no reset token received. Please try again.';
+
+              console.log('[AUTH DEBUG] PASSWORD RESET OTP VERIFY FAILED:', errorMsg);
+
+              set({ error: errorMsg, isLoading: false });
+              return { success: false, error: errorMsg };
+            }
+
+            console.log('[AUTH DEBUG] PASSWORD RESET OTP VERIFY SUCCESS');
+            return { success: true, resetToken };
+          }
+
+          const errorMsg =
+            response.data?.message || 'Invalid OTP';
+
+          console.log('[AUTH DEBUG] PASSWORD RESET OTP VERIFY REJECTED:', errorMsg);
+
+          set({ error: errorMsg, isLoading: false });
+          return { success: false, error: errorMsg };
+        } catch (error: any) {
+          const errorMsg =
+            error.response?.data?.message ||
+            error.message ||
+            'Verification failed';
+
+          console.log('[AUTH DEBUG] PASSWORD RESET OTP VERIFY ERROR:', {
+            status: error.response?.status,
+            errorCode: error.response?.data?.errorCode,
+            message: errorMsg,
+          });
+
           set({ error: errorMsg, isLoading: false });
           return { success: false, error: errorMsg };
         }
@@ -367,57 +733,268 @@ export const useAuthStore = create<AuthStore>()(
 
       resetPassword: async (resetToken: string, newPassword: string) => {
         set({ isLoading: true, error: null });
-        console.log('[AUTH DEBUG] ===== RESET PASSWORD START =====');
-        console.log('[AUTH DEBUG] resetTokenProvided:', !!resetToken);
-        console.log('[AUTH DEBUG] newPasswordProvided:', !!newPassword);
+
+        if (!resetToken) {
+          const errorMsg =
+            'Missing reset token. Please restart the password reset flow.';
+
+          set({ isLoading: false, error: errorMsg });
+
+          return { success: false, error: errorMsg };
+        }
+
         try {
           const api = require('../services/api').default;
-          const response = await api.post('/auth/reset-password', { resetToken, newPassword, confirmPassword: newPassword });
+
+          const payload = {
+            resetToken,
+            newPassword,
+            confirmPassword: newPassword,
+          };
+
+          console.log('[AUTH DEBUG] ===== RESET PASSWORD START =====');
+          console.log('[AUTH DEBUG] resetTokenProvided:', !!resetToken);
+          console.log('[AUTH DEBUG] newPasswordProvided:', !!newPassword);
+
+          const response = await api.post('/auth/reset-password', payload);
+
           console.log('[AUTH DEBUG] RESET PASSWORD RESPONSE');
           console.log('[AUTH DEBUG] status:', response.status);
           console.log('[AUTH DEBUG] success:', response.data?.success);
-          if (response.data.success) {
-            set({ isLoading: false });
+
+          if (!response.data?.success) {
+            const errorMsg =
+              response.data?.message || 'Failed to reset password.';
+
+            set({ isLoading: false, error: errorMsg });
+
+            return { success: false, error: errorMsg };
+          }
+
+          /*
+           * Password reset succeeded.
+           *
+           * The reset endpoint does not authenticate the session, so use the
+           * existing /auth/login endpoint immediately with the same account.
+           *
+           * For the verified-phone OTP flow, pendingPhone is available even
+           * when the forgot-password response did not return an email.
+           * For email reset, pendingEmail is preferred.
+           */
+          const pendingEmail = get().pendingEmail;
+          const pendingPhone = get().pendingPhone;
+          const loginIdentifier = pendingEmail || pendingPhone;
+
+          if (!loginIdentifier) {
+            const errorMsg =
+              'Password was updated, but the account identifier is missing. Please log in again.';
+
+            set({
+              isLoading: false,
+              error: errorMsg,
+              otpFlowUsed: null,
+              pendingOtp: null,
+            });
+
+            return { success: false, error: errorMsg };
+          }
+
+          console.log('[AUTH DEBUG] ===== AUTO LOGIN AFTER PASSWORD RESET =====');
+          console.log('[AUTH DEBUG] loginIdentifier:', loginIdentifier);
+          console.log('[AUTH DEBUG] identifierType:', pendingEmail ? 'email' : 'phone');
+
+          try {
+            const loginResponse = await api.post('/auth/login', {
+              emailOrPhone: loginIdentifier,
+              password: newPassword,
+              rememberMe: true,
+            });
+
+            console.log('[AUTH DEBUG] AUTO LOGIN RESPONSE');
+            console.log('[AUTH DEBUG] status:', loginResponse.status);
+            console.log('[AUTH DEBUG] success:', loginResponse.data?.success);
+            console.log(
+              '[AUTH DEBUG] hasAccessToken:',
+              !!loginResponse.data?.data?.accessToken
+            );
+            console.log(
+              '[AUTH DEBUG] hasUser:',
+              !!loginResponse.data?.data?.user
+            );
+
+            if (!loginResponse.data?.success) {
+              const errorMsg =
+                loginResponse.data?.message ||
+                'Password updated, but automatic login failed. Please log in again.';
+
+              set({
+                isLoading: false,
+                error: errorMsg,
+                otpFlowUsed: null,
+                pendingOtp: null,
+                pendingPhone: null,
+                pendingEmail: null,
+              });
+
+              return { success: false, error: errorMsg };
+            }
+
+            const data = loginResponse.data?.data || {};
+            const accessToken = data.accessToken || data.token;
+            const user = data.user;
+
+            if (!accessToken || !user) {
+              const errorMsg =
+                'Password updated, but the server did not return a valid login session. Please log in again.';
+
+              set({
+                isLoading: false,
+                error: errorMsg,
+                otpFlowUsed: null,
+                pendingOtp: null,
+                pendingPhone: null,
+                pendingEmail: null,
+              });
+
+              return { success: false, error: errorMsg };
+            }
+
+            set({
+              user,
+              token: accessToken,
+              refreshToken: data.refreshToken || null,
+              sessionId: data.sessionId || null,
+              isAuthenticated: true,
+              isLoading: false,
+              error: null,
+              otpFlowUsed: null,
+              pendingOtp: null,
+              pendingPhone: null,
+              pendingEmail: null,
+            });
+
+            console.log('[AUTH DEBUG] AUTO LOGIN SUCCESS');
+            console.log('[AUTH DEBUG] isAuthenticated:', true);
+            console.log('[AUTH DEBUG] tokenExists:', !!accessToken);
+
             return { success: true };
-          } else {
-            set({ error: response.data.message || 'Failed to reset password', isLoading: false });
-            return { success: false, error: response.data.message };
+          } catch (loginError: any) {
+            const errorMsg =
+              loginError.response?.data?.message ||
+              loginError.message ||
+              'Password updated, but automatic login failed. Please log in again.';
+
+            console.log('[AUTH DEBUG] AUTO LOGIN ERROR:', {
+              status: loginError.response?.status,
+              errorCode: loginError.response?.data?.errorCode,
+              message: errorMsg,
+            });
+
+            set({
+              isLoading: false,
+              error: errorMsg,
+              otpFlowUsed: null,
+              pendingOtp: null,
+              pendingPhone: null,
+              pendingEmail: null,
+            });
+
+            return { success: false, error: errorMsg };
           }
         } catch (error: any) {
-          console.warn('Reset password error', error.message || error);
-          const errorMsg = error.response?.data?.message || error.message || 'Failed to reset password';
-          set({ error: errorMsg, isLoading: false });
+          const errorMsg =
+            error.response?.data?.message ||
+            error.message ||
+            'Failed to reset password';
+
+          console.warn('[AUTH DEBUG] Reset password error:', {
+            status: error.response?.status,
+            errorCode: error.response?.data?.errorCode,
+            message: errorMsg,
+          });
+
+          set({ isLoading: false, error: errorMsg });
+
           return { success: false, error: errorMsg };
         }
       },
 
       register: async (fullName: string, email: string, password: string) => {
         set({ isLoading: true, error: null });
-        console.log('[Register Debug] Starting registration with payload:', { fullName, email, passwordLength: password?.length });
+
         try {
           const api = require('../services/api').default;
-          console.log('[Register Debug] Sending POST /auth/register request...');
-          const response = await api.post('/auth/register', { fullName, email, password });
-          console.log('[Register Debug] Response status:', response.status, 'Response body:', JSON.stringify(response.data));
-          if (response.data.success) {
-            console.log('[Register Debug] Registration successful!');
-            set({ isLoading: false });
-            return { success: true };
-          } else {
-            console.log('[Register Debug] Registration failed with message:', response.data.message);
-            set({ error: response.data.message || 'Registration failed', isLoading: false });
-            return { success: false, error: response.data.message };
+          const pendingPhone = get().pendingPhone;
+
+          if (!pendingPhone) {
+            const errorMsg =
+              'Mobile number is missing. Please enter your mobile number and try again.';
+            set({ isLoading: false, error: errorMsg });
+            return { success: false, error: errorMsg };
           }
-        } catch (error: any) {
-          console.warn('[Register Debug] Registration error occurred:', {
-            status: error.response?.status,
-            data: error.response?.data,
-            message: error.message
+
+          const normalizedPhone = pendingPhone.replace(/\s+/g, '');
+
+          console.log('[Register Debug] Starting registration:', {
+            fullName,
+            email,
+            phone: normalizedPhone,
+            passwordLength: password?.length,
           });
-          const errorMsg = error.response?.data?.message || error.message || 'Network error. Please try again.';
+
+          const response = await api.post('/auth/register', {
+            fullName,
+            email,
+            phone: normalizedPhone,
+            password,
+          });
+
+          console.log(
+            '[Register Debug] Response status:',
+            response.status,
+            'Response body:',
+            JSON.stringify(response.data)
+          );
+
+          if (response.data?.success) {
+            set({
+              isLoading: false,
+              pendingPhone: normalizedPhone,
+              pendingEmail: email,
+              otpFlowUsed: 'registration',
+              pendingOtp: null,
+              error: null,
+            });
+
+            return { success: true };
+          }
+
+          const errorMsg =
+            response.data?.message || 'Registration failed';
+
+          set({ error: errorMsg, isLoading: false });
+          return { success: false, error: errorMsg };
+        } catch (error: any) {
+          const errorCode = error.response?.data?.errorCode;
+          const errorMsg =
+            error.response?.data?.message ||
+            error.message ||
+            'Network error. Please try again.';
+
+          console.warn('[Register Debug] Registration error:', {
+            status: error.response?.status,
+            errorCode,
+            message: errorMsg,
+          });
+
           set({ error: errorMsg, isLoading: false });
           return { success: false, error: errorMsg };
         }
+      },
+
+      setPendingPhone: (phone: string) => {
+        const normalizedPhone = phone.replace(/\s+/g, '');
+        set({ pendingPhone: normalizedPhone });
       },
 
       updateUser: async (userData: Partial<User>) => {
@@ -427,7 +1004,6 @@ export const useAuthStore = create<AuthStore>()(
 
           // Build complete payload matching backend field expectations (fullName, phone_no, phone, email, avatar)
           const payload: any = {
-            ...userData,
             fullName: userData.name || (userData as any).fullName || currentUser?.name,
             phone_no: userData.phone || (userData as any).phone_no || currentUser?.phone,
             phone: userData.phone || (userData as any).phone_no || currentUser?.phone,
@@ -436,15 +1012,30 @@ export const useAuthStore = create<AuthStore>()(
           };
 
           let res;
+          let lastError: any;
+          console.log('[Profile] Bearer Token:', get().token);
           try {
             res = await api.put('/user/profile', payload);
           } catch (putErr: any) {
-            console.log('[Profile] PUT /user/profile failed, trying POST /user/profile');
+            lastError = putErr;
+            console.log('[Profile] PUT /user/profile failed, trying PATCH /user/profile');
+            console.log('[Profile] PUT error status:', putErr.response?.status);
+            console.log('[Profile] PUT error body:', JSON.stringify(putErr.response?.data, null, 2));
             try {
-              res = await api.post('/user/profile', payload);
-            } catch (postErr: any) {
-              console.log('[Profile] POST /user/profile failed, trying PUT /auth/profile');
-              res = await api.put('/auth/profile', payload);
+              res = await api.patch('/user/profile', payload);
+            } catch (patchErr: any) {
+              lastError = patchErr;
+              console.log('[Profile] PATCH /user/profile failed, trying PUT /auth/profile');
+              console.log('[Profile] PATCH error status:', patchErr.response?.status);
+              console.log('[Profile] PATCH error body:', JSON.stringify(patchErr.response?.data, null, 2));
+              try {
+                res = await api.put('/auth/profile', payload);
+              } catch (authErr: any) {
+                lastError = authErr;
+                console.log('[Profile] PUT /auth/profile also failed');
+                console.log('[Profile] /auth/profile error status:', authErr.response?.status);
+                console.log('[Profile] /auth/profile error body:', JSON.stringify(authErr.response?.data, null, 2));
+              }
             }
           }
 
@@ -463,33 +1054,21 @@ export const useAuthStore = create<AuthStore>()(
             return { success: true };
           }
 
-          // Fallback: update local store optimistically
-          const normalizedUser = {
-            ...currentUser,
-            ...userData,
-            name: userData.name || currentUser?.name || '',
-            phone: userData.phone || currentUser?.phone || '',
-            email: userData.email !== undefined ? userData.email : currentUser?.email || '',
-            avatar: userData.avatar !== undefined ? userData.avatar : currentUser?.avatar || '',
-          };
-          set({ user: normalizedUser as any });
-          return { success: true };
+          // API responded but not success
+          if (res && res.data && !res.data.success) {
+            return { success: false, message: res.data.message || 'Failed to update profile' };
+          }
+
+          // All endpoints failed — report the actual error
+          if (lastError) {
+            const errorMsg = lastError.response?.data?.message || lastError.message || 'Failed to update profile';
+            return { success: false, message: errorMsg };
+          }
+
+          return { success: false, message: 'Failed to update profile' };
         } catch (error: any) {
           console.warn('Update profile error', error.message || error);
-          const currentUser = get().user;
-          if (currentUser) {
-            const normalizedUser = {
-              ...currentUser,
-              ...userData,
-              name: userData.name || currentUser?.name || '',
-              phone: userData.phone || currentUser?.phone || '',
-              email: userData.email !== undefined ? userData.email : currentUser?.email || '',
-              avatar: userData.avatar !== undefined ? userData.avatar : currentUser?.avatar || '',
-            };
-            set({ user: normalizedUser as any });
-            return { success: true, message: 'Updated locally' };
-          }
-          return { success: false, message: error.response?.data?.message || error.message };
+          return { success: false, message: error.response?.data?.message || error.message || 'Failed to update profile' };
         }
       },
 
@@ -524,7 +1103,19 @@ export const useAuthStore = create<AuthStore>()(
         try {
           const api = require('../services/api').default;
           await api.post('/auth/logout').catch(() => { }); // Ignore logout errors
-          set({ user: null, token: null, refreshToken: null, sessionId: null, sessions: [], isAuthenticated: false, error: null });
+          set({
+            user: null,
+            token: null,
+            refreshToken: null,
+            sessionId: null,
+            sessions: [],
+            isAuthenticated: false,
+            error: null,
+            otpFlowUsed: null,
+            pendingOtp: null,
+            pendingPhone: null,
+            pendingEmail: null,
+          });
         } catch (error: any) {
           console.warn('Error during logout', error.message || error);
         }
@@ -563,7 +1154,19 @@ export const useAuthStore = create<AuthStore>()(
           const api = require('../services/api').default;
           const response = await api.post('/auth/logout-all');
           if (response.data.success) {
-            set({ user: null, token: null, refreshToken: null, sessionId: null, sessions: [], isAuthenticated: false, error: null });
+            set({
+              user: null,
+              token: null,
+              refreshToken: null,
+              sessionId: null,
+              sessions: [],
+              isAuthenticated: false,
+              error: null,
+              otpFlowUsed: null,
+              pendingOtp: null,
+              pendingPhone: null,
+              pendingEmail: null,
+            });
             return { success: true };
           }
           return { success: false, error: response.data.message };

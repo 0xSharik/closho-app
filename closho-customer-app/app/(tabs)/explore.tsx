@@ -459,6 +459,9 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xxxl,
   },
   sortOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: colors.borderLight,

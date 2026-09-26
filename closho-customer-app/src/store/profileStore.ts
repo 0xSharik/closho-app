@@ -54,9 +54,14 @@ export const useProfileStore = create<ProfileState>()(
           const api = require('../services/api').default;
           const res = await api.get('/user/addresses');
           if (res.data.success) {
-            set({ addresses: res.data.data, isLoading: false, error: null });
+            // Normalize: backend may return data as an array, or { addresses: [...] }, or { data: [...] }
+            const raw = res.data.data;
+            const normalized: Address[] = Array.isArray(raw)
+              ? raw
+              : (Array.isArray(raw?.addresses) ? raw.addresses : (Array.isArray(raw?.items) ? raw.items : []));
+            set({ addresses: normalized, isLoading: false, error: null });
           } else {
-             set({ isLoading: false });
+            set({ isLoading: false });
           }
         } catch (error: any) {
           set({ isLoading: false, error: error.message });
@@ -65,14 +70,34 @@ export const useProfileStore = create<ProfileState>()(
       addAddress: async (address) => {
         try {
           const api = require('../services/api').default;
-          const res = await api.post('/user/addresses', address);
+          // Strip empty-string optional fields — some backends reject "" for optional fields
+          const payload: any = { ...address };
+          if (!payload.addressLine2) delete payload.addressLine2;
+          // Normalize phone to E.164: bare 10-digit → +91XXXXXXXXXX
+          if (payload.phone) {
+            const digits = payload.phone.replace(/\s+/g, '');
+            if (/^\d{10}$/.test(digits)) {
+              payload.phone = `+91${digits}`;
+            } else if (/^\d{12}$/.test(digits)) {
+              payload.phone = `+${digits}`;
+            }
+          }
+          console.log('[addAddress] payload:', JSON.stringify(payload, null, 2));
+          const res = await api.post('/user/addresses', payload);
           if (res.data.success) {
             await get().fetchAddresses();
             return { success: true };
           }
           return { success: false, message: res.data.message };
         } catch (error: any) {
-          return { success: false, message: error.message };
+          // Surface the actual backend validation message, not just the axios error string
+          const msg =
+            error.response?.data?.message ||
+            error.response?.data?.errors?.[0]?.message ||
+            error.message ||
+            'Failed to add address';
+          console.warn('[addAddress] error:', JSON.stringify(error.response?.data, null, 2));
+          return { success: false, message: msg };
         }
       },
       updateAddress: async (id, address) => {

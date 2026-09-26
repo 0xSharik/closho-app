@@ -48,8 +48,24 @@ export const useWishlistStore = create<WishlistState>()(
           const api = require('../services/api').default;
           const res = await api.get('/wishlist');
           if (res.data.success && res.data.data) {
-            const items = Array.isArray(res.data.data) ? res.data.data : (res.data.data.items || []);
-            set({ items });
+            const rawItems = Array.isArray(res.data.data)
+              ? res.data.data
+              : (res.data.data.items || []);
+            // Normalize items: backend may return { id, product: { id, name, price, thumbnail, ... } }
+            const normalizedItems: Product[] = rawItems.map((item: any) => {
+              const p = item.product || item;
+              return {
+                id: p.id || item.productId || item.id,
+                name: p.name || 'Unknown',
+                price: Number(p.price) || 0,
+                originalPrice: p.originalPrice ? Number(p.originalPrice) : undefined,
+                discount: p.discountPercent,
+                rating: p.rating || 0,
+                reviews: p.reviewCount || 0,
+                imageUrl: p.thumbnail || p.images?.[0] || p.imageUrl || '',
+              };
+            });
+            set({ items: normalizedItems });
           }
         } catch (error) {
           console.error('Fetch wishlist error', error);

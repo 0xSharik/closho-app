@@ -1,16 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, KeyboardAvoidingView, Platform, Animated, ScrollView } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useAuthStore } from '../../src/store/authStore';
-import { Input } from '../../src/components/ui/Input';
-import { Button } from '../../src/components/ui/Button';
-import { colors } from '../../src/theme/colors';
-import { typography } from '../../src/theme/typography';
-import { spacing } from '../../src/theme/spacing';
-import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { Controller, useForm } from 'react-hook-form';
+import { Animated, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { z } from 'zod';
+import { Button } from '../../src/components/ui/Button';
+import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
+import { useAuthStore } from '../../src/store/authStore';
+import { colors } from '../../src/theme/colors';
+import { spacing } from '../../src/theme/spacing';
+import { typography } from '../../src/theme/typography';
 
 const resetSchema = z.object({
   password: z.string().min(6, 'Password must be at least 6 characters'),
@@ -22,9 +22,20 @@ const resetSchema = z.object({
 
 type ResetForm = z.infer<typeof resetSchema>;
 
+type AuthControllerField = {
+  onChange: (value: string) => void;
+  onBlur: () => void;
+  value: string;
+};
+
 export default function ResetPasswordScreen() {
   const router = useRouter();
-  const { resetToken } = useLocalSearchParams<{ resetToken: string }>();
+  const params = useLocalSearchParams<{ resetToken?: string }>();
+
+  const resetToken =
+    typeof params.resetToken === 'string'
+      ? params.resetToken
+      : '';
   const { showSnackbar } = useSnackbar();
   const [isLoading, setIsLoading] = useState(false);
 
@@ -43,8 +54,10 @@ export default function ResetPasswordScreen() {
   });
 
   const onSubmit = async (data: ResetForm) => {
+    if (isLoading) return;
+
     if (!resetToken) {
-      showSnackbar('Error: Reset token is missing. Please restart the process.', 'error');
+      showSnackbar('Error: Missing reset token. Please restart the password reset process.', 'error');
       return;
     }
 
@@ -53,8 +66,11 @@ export default function ResetPasswordScreen() {
     setIsLoading(false);
 
     if (result.success) {
-      showSnackbar('Password reset successful', 'success');
-      router.replace('/(auth)/login');
+      showSnackbar(
+        'Password updated successfully. You are now logged in.',
+        'success'
+      );
+      router.replace('/(tabs)/reels');
     } else {
       showSnackbar(result.error || 'Failed to reset password. Try again.', 'error');
     }
@@ -73,7 +89,7 @@ export default function ResetPasswordScreen() {
             <Controller
               control={control}
               name="password"
-              render={({ field: { onChange, onBlur, value } }) => (
+              render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
                 <Input label="New Password" placeholder="Enter new password" isPassword onBlur={onBlur} onChangeText={onChange} value={value} error={errors.password?.message} />
               )}
             />
@@ -81,7 +97,7 @@ export default function ResetPasswordScreen() {
             <Controller
               control={control}
               name="confirmPassword"
-              render={({ field: { onChange, onBlur, value } }) => (
+              render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
                 <Input label="Confirm Password" placeholder="Confirm new password" isPassword onBlur={onBlur} onChangeText={onChange} value={value} error={errors.confirmPassword?.message} />
               )}
             />

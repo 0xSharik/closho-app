@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { useRouter } from 'expo-router';
@@ -37,22 +38,29 @@ try {
 }
 
 const loginSchema = z.object({
-  email: z.string().email('Please enter a valid email address'),
+  emailOrPhone: z.string().min(3, 'Please enter a valid email or phone number'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
 });
 
 type LoginForm = z.infer<typeof loginSchema>;
 
+type AuthControllerField = {
+  onChange: (value: string) => void;
+  onBlur: () => void;
+  value: string;
+};
+
 export default function LoginScreen() {
   const router = useRouter();
   const { showSnackbar } = useSnackbar();
   const [isLoading, setIsLoading] = useState(false);
-  const [loginMethod, setLoginMethod] = useState<'mobile' | 'email'>('mobile');
+  const [loginMethod, setLoginMethod] = useState<'mobile' | 'email'>('email');
 
   // Mobile OTP state
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
   const [isOtpSent, setIsOtpSent] = useState(false);
+  const [phoneNotFound, setPhoneNotFound] = useState(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
@@ -67,14 +75,14 @@ export default function LoginScreen() {
   const { control, handleSubmit, formState: { errors } } = useForm<LoginForm>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      email: '',
+      emailOrPhone: '',
       password: '',
     },
   });
 
   const onSubmitEmail = async (data: LoginForm) => {
     setIsLoading(true);
-    const result = await useAuthStore.getState().login(data.email, data.password);
+    const result = await useAuthStore.getState().login(data.emailOrPhone, data.password);
     setIsLoading(false);
 
     if (result.success) {
@@ -89,6 +97,7 @@ export default function LoginScreen() {
       showSnackbar('Please enter a valid 10-digit phone number', 'error');
       return;
     }
+    setPhoneNotFound(false);
     setIsLoading(true);
     const result = await useAuthStore.getState().sendOtp(phone);
     setIsLoading(false);
@@ -96,164 +105,181 @@ export default function LoginScreen() {
     if (result.success) {
       setIsOtpSent(true);
       showSnackbar('OTP sent successfully!', 'success');
+    } else if (result.errorCode === 'USER_NOT_FOUND') {
+      setPhoneNotFound(true);
+      useAuthStore.getState().setPendingPhone(phone);
+      console.log('[AUTH DEBUG] USER_NOT_FOUND -> showing registration option for:', phone);
     } else {
-      showSnackbar(result.error || 'Failed to send OTP.', 'error');
+      showSnackbar(result.error || 'Failed to send OTP. Please try again.', 'error');
     }
   };
 
   const handleVerifyOtp = async () => {
-    if (otp.length < 4) {
-      showSnackbar('Please enter the OTP', 'error');
+    if (otp.length !== 6) {
+      showSnackbar('Please enter the 6-digit OTP', 'error');
       return;
     }
+
     setIsLoading(true);
-    const result = await useAuthStore.getState().verifyOtp(phone, otp) as { success: boolean; error?: string; resetToken?: string };
+    const result = await useAuthStore.getState().verifyOtp(phone, otp);
     setIsLoading(false);
 
     console.log('[AUTH DEBUG] ===== ROUTING STATE =====');
     console.log('[AUTH DEBUG] isAuthenticated:', useAuthStore.getState().isAuthenticated);
-    console.log('[AUTH DEBUG] hasResetToken:', !!(result as any).resetToken);
+    console.log('[AUTH DEBUG] hasResetToken:', !!result.resetToken);
 
-    if (result.success) {
-      if (result.resetToken) {
-        // Password-reset OTP verified — user is NOT logged in, must reset password first.
-        console.log('[AUTH DEBUG] ROUTING');
-        console.log('[AUTH DEBUG] reason: password_reset');
-        console.log('[AUTH DEBUG] isAuthenticated: false');
-        console.log('[AUTH DEBUG] target: reset-password');
-        showSnackbar('OTP verified! Please set your new password.', 'info');
-        router.push({ pathname: '/(auth)/reset-password', params: { resetToken: result.resetToken } });
-      } else {
-        // Normal phone_verification login — user is authenticated.
-        console.log('[AUTH DEBUG] ROUTING');
-        console.log('[AUTH DEBUG] reason: authenticated');
-        console.log('[AUTH DEBUG] isAuthenticated: true');
-        console.log('[AUTH DEBUG] target: reels');
-        showSnackbar('Successfully logged in!', 'success');
-      }
-    } else {
+    if (!result.success) {
       showSnackbar(result.error || 'Invalid OTP.', 'error');
+      return;
+    }
+
+    if (result.resetToken) {
+      console.log('[AUTH DEBUG] OTP is password-reset flow -> reset-password');
+      showSnackbar('OTP verified! Please set your new password.', 'info');
+
+      router.push({
+        pathname: '/(auth)/reset-password',
+        params: { resetToken: result.resetToken },
+      });
+      return;
+    }
+
+    if (useAuthStore.getState().isAuthenticated) {
+      console.log('[AUTH DEBUG] OTP login succeeded with real access token.');
+      showSnackbar('Successfully logged in!', 'success');
     }
   };
 
- const handleGoogleLogin = async () => {
-  console.log('[GoogleSignIn] ===== BUTTON PRESSED =====');
+  const handleGoogleLogin = async () => {
+    console.log('[GoogleSignIn] ===== BUTTON PRESSED =====');
 
-  try {
-    console.log('[GoogleSignIn] Platform:', Platform.OS);
+    try {
+      console.log('[GoogleSignIn] Platform:', Platform.OS);
 
-    if (Platform.OS === 'web') {
-      console.log('[GoogleSignIn] Web platform, stopping');
-      showSnackbar('Google Login is not supported on Web in this demo.', 'info');
-      return;
-    }
+      if (Platform.OS === 'web') {
+        console.log('[GoogleSignIn] Web platform, stopping');
+        showSnackbar('Google Login is not supported on Web in this demo.', 'info');
+        return;
+      }
 
-    console.log('[GoogleSignIn] GoogleSignin exists:', !!GoogleSignin);
-    console.log(
-      '[GoogleSignIn] hasPlayServices exists:',
-      typeof GoogleSignin?.hasPlayServices === 'function'
-    );
-
-    if (!GoogleSignin || typeof GoogleSignin.hasPlayServices !== 'function') {
-      console.log('[GoogleSignIn] GoogleSignin unavailable');
-
-      showSnackbar(
-        'Google Sign In requires a custom development build (not available in standard Expo Go).',
-        'info'
+      console.log('[GoogleSignIn] GoogleSignin exists:', !!GoogleSignin);
+      console.log(
+        '[GoogleSignIn] hasPlayServices exists:',
+        typeof GoogleSignin?.hasPlayServices === 'function'
       );
-      return;
-    }
 
-    console.log('[GoogleSignIn] Checking Play Services...');
-
-    await GoogleSignin.hasPlayServices();
-
-    console.log('[GoogleSignIn] Play Services OK');
-    console.log('[GoogleSignIn] Calling GoogleSignin.signIn()...');
-
-    const response = await GoogleSignin.signIn();
-
-    console.log(
-      '[GoogleSignIn] Response:',
-      JSON.stringify(response, null, 2)
-    );
-
-    const idToken = response.data?.idToken;
-
-    console.log('[GoogleSignIn] Has ID token:', !!idToken);
-    console.log('[GoogleSignIn] Token length:', idToken?.length);
-
-    if (idToken) {
-      console.log('[GoogleSignIn] Calling backend /auth/google...');
-
-      setIsLoading(true);
-
-      const result = await useAuthStore
-        .getState()
-        .googleLogin(idToken);
-
-      console.log('[GoogleSignIn] Backend result:', result);
-
-      setIsLoading(false);
-
-      if (result.success) {
-        console.log('[GoogleSignIn] LOGIN SUCCESS');
+      if (!GoogleSignin || typeof GoogleSignin.hasPlayServices !== 'function') {
+        console.log('[GoogleSignIn] GoogleSignin unavailable');
 
         showSnackbar(
-          'Successfully logged in with Google!',
-          'success'
+          'Google Sign In requires a custom development build (not available in standard Expo Go).',
+          'info'
         );
+        return;
+      }
+
+      console.log('[GoogleSignIn] Checking Play Services...');
+
+      await GoogleSignin.hasPlayServices();
+
+      console.log('[GoogleSignIn] Play Services OK');
+      console.log('[GoogleSignIn] Signing out any existing session to force account picker...');
+
+      // Always sign out first so Google shows the account chooser every time.
+      // Without this, Google silently reuses the last signed-in account.
+      try {
+        await GoogleSignin.signOut();
+        console.log('[GoogleSignIn] Signed out of previous session');
+      } catch (signOutErr) {
+        // Not fatal — continue even if sign-out fails (e.g. no prior session)
+        console.log('[GoogleSignIn] signOut skipped (no prior session):', signOutErr);
+      }
+
+      console.log('[GoogleSignIn] Calling GoogleSignin.signIn()...');
+
+      const response = await GoogleSignin.signIn();
+
+      console.log(
+        '[GoogleSignIn] Response:',
+        JSON.stringify(response, null, 2)
+      );
+
+      const idToken = response.data?.idToken;
+
+      console.log('[GoogleSignIn] Has ID token:', !!idToken);
+      console.log('[GoogleSignIn] Token length:', idToken?.length);
+
+      if (idToken) {
+        console.log('[GoogleSignIn] Calling backend /auth/google...');
+
+        setIsLoading(true);
+
+        const result = await useAuthStore
+          .getState()
+          .googleLogin(idToken);
+
+        console.log('[GoogleSignIn] Backend result:', result);
+
+        setIsLoading(false);
+
+        if (result.success) {
+          console.log('[GoogleSignIn] LOGIN SUCCESS');
+
+          showSnackbar(
+            'Successfully logged in with Google!',
+            'success'
+          );
+        } else {
+          console.log('[GoogleSignIn] BACKEND LOGIN FAILED:', result.error);
+
+          showSnackbar(
+            result.error || 'Google Login failed on server.',
+            'error'
+          );
+        }
       } else {
-        console.log('[GoogleSignIn] BACKEND LOGIN FAILED:', result.error);
+        console.log('[GoogleSignIn] NO ID TOKEN');
 
         showSnackbar(
-          result.error || 'Google Login failed on server.',
+          'Google Sign In cancelled or missing token.',
           'error'
         );
       }
-    } else {
-      console.log('[GoogleSignIn] NO ID TOKEN');
 
-      showSnackbar(
-        'Google Sign In cancelled or missing token.',
-        'error'
-      );
+    } catch (error: any) {
+
+      console.log('[GoogleSignIn] ===== ERROR =====');
+      console.log('[GoogleSignIn] Error:', error);
+      console.log('[GoogleSignIn] Error message:', error?.message);
+      console.log('[GoogleSignIn] Error code:', error?.code);
+      console.log('[GoogleSignIn] Error response:', error?.response?.data);
+
+      if (error.code === statusCodes.SIGN_IN_CANCELLED) {
+        console.log('[GoogleSignIn] User cancelled');
+      } else if (error.code === statusCodes.IN_PROGRESS) {
+        console.log('[GoogleSignIn] Sign in already in progress');
+
+        showSnackbar(
+          'Google Sign In is already in progress.',
+          'info'
+        );
+      } else if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+        console.log('[GoogleSignIn] Play Services unavailable');
+
+        showSnackbar(
+          'Google Play Services not available or outdated.',
+          'error'
+        );
+      } else {
+        console.log('[GoogleSignIn] UNKNOWN GOOGLE ERROR');
+
+        showSnackbar(
+          'Google Sign In error: ' + error.message,
+          'error'
+        );
+      }
     }
-
-  } catch (error: any) {
-
-    console.log('[GoogleSignIn] ===== ERROR =====');
-    console.log('[GoogleSignIn] Error:', error);
-    console.log('[GoogleSignIn] Error message:', error?.message);
-    console.log('[GoogleSignIn] Error code:', error?.code);
-    console.log('[GoogleSignIn] Error response:', error?.response?.data);
-
-    if (error.code === statusCodes.SIGN_IN_CANCELLED) {
-      console.log('[GoogleSignIn] User cancelled');
-    } else if (error.code === statusCodes.IN_PROGRESS) {
-      console.log('[GoogleSignIn] Sign in already in progress');
-
-      showSnackbar(
-        'Google Sign In is already in progress.',
-        'info'
-      );
-    } else if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
-      console.log('[GoogleSignIn] Play Services unavailable');
-
-      showSnackbar(
-        'Google Play Services not available or outdated.',
-        'error'
-      );
-    } else {
-      console.log('[GoogleSignIn] UNKNOWN GOOGLE ERROR');
-
-      showSnackbar(
-        'Google Sign In error: ' + error.message,
-        'error'
-      );
-    }
-  }
-};
+  };
 
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -269,16 +295,16 @@ export default function LoginScreen() {
           {/* Tabs */}
           <View style={styles.tabContainer}>
             <TouchableOpacity
-              style={[styles.tab, loginMethod === 'mobile' && styles.activeTab]}
-              onPress={() => setLoginMethod('mobile')}
-            >
-              <Text style={[styles.tabText, loginMethod === 'mobile' && styles.activeTabText]}>Mobile Number</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
               style={[styles.tab, loginMethod === 'email' && styles.activeTab]}
               onPress={() => setLoginMethod('email')}
             >
-              <Text style={[styles.tabText, loginMethod === 'email' && styles.activeTabText]}>Email</Text>
+              <Text style={[styles.tabText, loginMethod === 'email' && styles.activeTabText]}>Email / Mobile</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, loginMethod === 'mobile' && styles.activeTab]}
+              onPress={() => setLoginMethod('mobile')}
+            >
+              <Text style={[styles.tabText, loginMethod === 'mobile' && styles.activeTabText]}>Phone</Text>
             </TouchableOpacity>
           </View>
 
@@ -286,16 +312,16 @@ export default function LoginScreen() {
             <View>
               <Controller
                 control={control}
-                name="email"
-                render={({ field: { onChange, onBlur, value } }) => (
-                  <Input label="Email" placeholder="Enter your email" keyboardType="email-address" autoCapitalize="none" onBlur={onBlur} onChangeText={onChange} value={value} error={errors.email?.message} />
+                name="emailOrPhone"
+                render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
+                  <Input label="Email or Mobile" placeholder="Enter email or mobile" autoCapitalize="none" onBlur={onBlur} onChangeText={onChange} value={value} error={errors.emailOrPhone?.message} />
                 )}
               />
 
               <Controller
                 control={control}
                 name="password"
-                render={({ field: { onChange, onBlur, value } }) => (
+                render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
                   <Input label="Password" placeholder="Enter your password" isPassword onBlur={onBlur} onChangeText={onChange} value={value} error={errors.password?.message} />
                 )}
               />
@@ -337,16 +363,40 @@ export default function LoginScreen() {
               )}
 
               {!isOtpSent ? (
-                <Button
-                  title={isLoading ? "Sending..." : "Send OTP"}
-                  onPress={handleSendOtp}
-                  disabled={isLoading || phone.length < 10}
-                />
+                <>
+                  <Button
+                    title={isLoading ? "Sending..." : "Send OTP"}
+                    onPress={handleSendOtp}
+                    disabled={isLoading || phone.length < 10}
+                  />
+                  {phoneNotFound && (
+                    <View style={styles.notFoundBox}>
+                      <Ionicons name="alert-circle-outline" size={20} color={colors.status?.error || '#FF4444'} />
+                      <View style={{ flex: 1, marginLeft: 8 }}>
+                        <Text style={styles.notFoundTitle}>Number not registered</Text>
+                        <Text style={styles.notFoundSub}>This mobile number doesn't exist in our system.</Text>
+                      </View>
+                    </View>
+                  )}
+                  {phoneNotFound && (
+                    <Button
+                      title="Create Account"
+                      variant="outline"
+                      style={{ marginTop: 8 }}
+                      onPress={() =>
+                        router.push({
+                          pathname: '/(auth)/register',
+                          params: { phone },
+                        })
+                      }
+                    />
+                  )}
+                </>
               ) : (
                 <Button
                   title={isLoading ? "Verifying..." : "Verify OTP"}
                   onPress={handleVerifyOtp}
-                  disabled={isLoading || otp.length < 4}
+                  disabled={isLoading || otp.length !== 6}
                 />
               )}
 
@@ -478,5 +528,26 @@ const styles = StyleSheet.create({
   },
   footerText: {
     color: colors.text.secondary,
+  },
+  notFoundBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FF444415',
+    borderWidth: 1,
+    borderColor: '#FF444440',
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 12,
+  },
+  notFoundTitle: {
+    color: '#FF4444',
+    fontWeight: 'bold',
+    fontSize: 13,
+    marginBottom: 2,
+  },
+  notFoundSub: {
+    color: colors.text.secondary,
+    fontSize: 12,
+    lineHeight: 16,
   },
 });

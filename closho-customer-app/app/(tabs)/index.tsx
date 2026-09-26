@@ -1,20 +1,21 @@
-import React, { useRef, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity, Image, Animated, Platform, ActivityIndicator, RefreshControl, Modal } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../src/theme/colors';
-import { typography } from '../../src/theme/typography';
-import { spacing } from '../../src/theme/spacing';
-import { ProductCard, Product } from '../../src/components/product/ProductCard';
-import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Image, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Product, ProductCard } from '../../src/components/product/ProductCard';
+import { colors } from '../../src/theme/colors';
+import { spacing } from '../../src/theme/spacing';
+import { typography } from '../../src/theme/typography';
 
 import * as Location from 'expo-location';
-import { useStoreStore } from '../../src/store/storeStore';
-import { useReelsStore } from '../../src/store/reelsStore';
-import api from '../../src/services/api';
 import { ProductGridSkeleton } from '../../src/components/ui/SkeletonLoader';
+import api from '../../src/services/api';
+import { useAuthStore } from '../../src/store/authStore';
 import { useProfileStore } from '../../src/store/profileStore';
+import { useReelsStore } from '../../src/store/reelsStore';
+import { useStoreStore } from '../../src/store/storeStore';
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -22,12 +23,19 @@ export default function HomeScreen() {
   const { currentStore, availableStores, fetchAllStores, fetchNearestStore, setCurrentStore } = useStoreStore();
   const { reels, fetchReels } = useReelsStore();
   const { addresses, fetchAddresses } = useProfileStore();
+  const { user } = useAuthStore();
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isAddressModalVisible, setIsAddressModalVisible] = useState(false);
   const [isStoreModalVisible, setIsStoreModalVisible] = useState(false);
-  
+
+  // Stable shuffle for Recommendations — only re-shuffles when products array changes
+  const shuffledProducts = useMemo(
+    () => [...products].sort(() => 0.5 - Math.random()),
+    [products]
+  );
+
   // Subtle entrance animation
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
@@ -37,14 +45,14 @@ export default function HomeScreen() {
       Animated.timing(fadeAnim, { toValue: 1, duration: 800, useNativeDriver: true }),
       Animated.timing(slideAnim, { toValue: 0, duration: 800, useNativeDriver: true })
     ]).start();
-    
+
     // Fetch all stores and reels
     fetchAllStores();
     fetchReels();
 
     const initLocationAndStores = async () => {
       if (currentStore) return;
-      
+
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
@@ -56,7 +64,7 @@ export default function HomeScreen() {
         const location = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
         });
-        
+
         await fetchNearestStore(location.coords.latitude, location.coords.longitude, 15);
       } catch (error) {
         console.warn('Error getting location', error);
@@ -64,6 +72,17 @@ export default function HomeScreen() {
       }
     };
     initLocationAndStores();
+  }, []);
+
+  // Fetch products + addresses when store changes (guarded to prevent double-fire on startup)
+  const prevStoreIdRef = React.useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const newId = currentStore?.id ?? null;
+    if (prevStoreIdRef.current === undefined || prevStoreIdRef.current !== newId) {
+      prevStoreIdRef.current = newId;
+      fetchAddresses();
+      fetchProducts();
+    }
   }, [currentStore]);
 
   const fetchProducts = async () => {
@@ -73,13 +92,12 @@ export default function HomeScreen() {
       if (res.data) {
         const responseData = res.data.data !== undefined ? res.data.data : res.data;
         const productsArray = Array.isArray(responseData) ? responseData : (responseData?.products || []);
-        
         if (Array.isArray(productsArray) && productsArray.length > 0) {
           const formattedProducts = productsArray.map((p: any) => ({
             ...p,
             price: Number(p.price) || 0,
             originalPrice: p.originalPrice ? Number(p.originalPrice) : undefined,
-            imageUrl: p.thumbnail || p.images?.[0] || 'https://via.placeholder.com/400x500?text=No+Image',
+            imageUrl: p.thumbnail || p.images?.[0] || '',
           }));
           setProducts(formattedProducts);
         }
@@ -90,12 +108,6 @@ export default function HomeScreen() {
       setIsLoading(false);
     }
   };
-
-  useEffect(() => {
-    fetchReels();
-    fetchAddresses();
-    fetchProducts();
-  }, [currentStore]);
 
   const onRefresh = React.useCallback(async () => {
     setRefreshing(true);
@@ -117,15 +129,15 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView 
-        style={styles.container} 
-        contentContainerStyle={[styles.scrollContent, { paddingTop: Math.max(insets.top, Platform.OS === 'android' ? 36 : 44) + spacing.xs }]} 
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[styles.scrollContent, { paddingTop: Math.max(insets.top, Platform.OS === 'android' ? 36 : 44) + spacing.xs }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
         }
       >
-        
+
         {/* ── HEADER ── */}
         <Animated.View style={[styles.topHeader, { opacity: fadeAnim }]}>
           <View style={styles.headerLeft}>
@@ -144,7 +156,15 @@ export default function HomeScreen() {
           <View style={styles.headerRight}>
             <TouchableOpacity style={styles.iconBtn} activeOpacity={0.7} onPress={() => router.push('/(tabs)/profile')}>
               <View style={styles.profileImageWrapper}>
-                <Image source={{ uri: 'https://i.pravatar.cc/150?img=68' }} style={styles.profileImage} />
+                {user?.avatar ? (
+                  <Image source={{ uri: user.avatar }} style={styles.profileImage} />
+                ) : (
+                  <View style={[styles.profileImage, { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center' }]}>
+                    <Text style={{ color: colors.text.inverse, fontWeight: 'bold', fontSize: 14 }}>
+                      {(user?.name || user?.email || 'U').charAt(0).toUpperCase()}
+                    </Text>
+                  </View>
+                )}
               </View>
             </TouchableOpacity>
             <TouchableOpacity style={styles.iconBtn} activeOpacity={0.7} onPress={() => router.push('/notifications')}>
@@ -157,7 +177,7 @@ export default function HomeScreen() {
 
         {/* ── NEAREST STORE ── */}
         <Animated.View style={[styles.nearestStoreContainer, { opacity: fadeAnim }]}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={{ flexDirection: 'row', alignItems: 'center' }}
             onPress={() => {
               Haptics.selectionAsync();
@@ -172,8 +192,8 @@ export default function HomeScreen() {
         </Animated.View>
 
         {/* ── SEARCH BAR ── */}
-        <TouchableOpacity 
-          activeOpacity={0.9} 
+        <TouchableOpacity
+          activeOpacity={0.9}
           onPress={() => router.push('/(tabs)/explore')}
         >
           <Animated.View style={[styles.searchContainer, { opacity: fadeAnim }]}>
@@ -187,8 +207,8 @@ export default function HomeScreen() {
 
         {/* ── BANNER ── */}
         <Animated.View style={[styles.bannerContainer, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <Image 
-            source={{ uri: 'https://images.unsplash.com/photo-1523381294911-8d3cead13475?q=80&w=800&auto=format&fit=crop' }} 
+          <Image
+            source={{ uri: 'https://images.unsplash.com/photo-1523381294911-8d3cead13475?q=80&w=800&auto=format&fit=crop' }}
             style={styles.bannerImage}
           />
           <View style={styles.bannerOverlay}>
@@ -210,17 +230,17 @@ export default function HomeScreen() {
             {availableStores.map((store, index) => {
               const isActive = currentStore?.id === store.id;
               return (
-                <TouchableOpacity 
+                <TouchableOpacity
                   key={store.id || index}
                   style={[styles.storeCardBox, isActive && styles.storeCardBoxActive]}
                   activeOpacity={0.8}
                   onPress={() => handleSelectStore(store)}
                 >
                   <View style={styles.storeCardImageContainer}>
-                    <Ionicons 
-                      name="storefront-outline" 
-                      size={20} 
-                      color={isActive ? colors.background : colors.text.primary} 
+                    <Ionicons
+                      name="storefront-outline"
+                      size={20}
+                      color={isActive ? colors.background : colors.text.primary}
                     />
                   </View>
                   <Text style={[styles.storeCardTitle, isActive && styles.storeCardTitleActive]} numberOfLines={1}>
@@ -243,18 +263,24 @@ export default function HomeScreen() {
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.horizontalList}>
               {reels.slice(0, 5).map((reel, index) => (
-                <TouchableOpacity 
+                <TouchableOpacity
                   key={reel.id}
-                  style={styles.reelCard} 
+                  style={styles.reelCard}
                   onPress={() => {
                     Haptics.impactAsync();
                     router.push('/(tabs)/reels');
                   }}
                 >
-                  <Image
-                    style={styles.reelVideo}
-                    source={{ uri: reel.thumbnail || reel.videoUrl }}
-                  />
+                  {(reel.thumbnail || reel.videoUrl) ? (
+                    <Image
+                      style={styles.reelVideo}
+                      source={{ uri: reel.thumbnail || reel.videoUrl }}
+                    />
+                  ) : (
+                    <View style={[styles.reelVideo, { backgroundColor: colors.surfaceLight, justifyContent: 'center', alignItems: 'center' }]}>
+                      <Ionicons name="videocam-outline" size={28} color={colors.text.tertiary} />
+                    </View>
+                  )}
                   <View style={styles.playIconContainer}>
                     <Ionicons name="play-circle" size={40} color="rgba(255,255,255,0.7)" />
                   </View>
@@ -274,14 +300,17 @@ export default function HomeScreen() {
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.horizontalList}>
-                {products.slice(0, 6).map(product => (
-                  <ProductCard 
-                    key={product.id} 
-                    product={product} 
-                    style={styles.horizontalProductCard}
-                    onPress={() => router.push(`/product/${product.id}`)} 
-                  />
-                ))}
+                {products
+                  .filter((p, idx, arr) => arr.findIndex(x => x.id === p.id) === idx)
+                  .slice(0, 6)
+                  .map(product => (
+                    <ProductCard
+                      key={product.id}
+                      product={product}
+                      style={styles.horizontalProductCard}
+                      onPress={() => router.push(`/product/${product.id}`)}
+                    />
+                  ))}
               </ScrollView>
             )}
           </Animated.View>
@@ -300,11 +329,11 @@ export default function HomeScreen() {
             ) : (
               <View style={styles.gridContainer}>
                 {/* Randomize items to simulate random for new users, related for old */}
-                {[...products].sort(() => 0.5 - Math.random()).slice(0, 8).map(product => (
+                {shuffledProducts.slice(0, 8).map(product => (
                   <View key={product.id} style={styles.gridItem}>
-                    <ProductCard 
-                      product={product} 
-                      onPress={() => router.push(`/product/${product.id}`)} 
+                    <ProductCard
+                      product={product}
+                      onPress={() => router.push(`/product/${product.id}`)}
                     />
                   </View>
                 ))}
@@ -367,9 +396,9 @@ export default function HomeScreen() {
               </TouchableOpacity>
 
               {availableStores.map(store => (
-                <TouchableOpacity 
-                  key={store.id} 
-                  style={[styles.addressItem, currentStore?.id === store.id && { borderColor: colors.primary, borderWidth: 1 }]} 
+                <TouchableOpacity
+                  key={store.id}
+                  style={[styles.addressItem, currentStore?.id === store.id && { borderColor: colors.primary, borderWidth: 1 }]}
                   onPress={() => {
                     handleSelectStore(store);
                     setIsStoreModalVisible(false);
