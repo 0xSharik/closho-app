@@ -37,6 +37,12 @@
         }
       ],
       "expo-image",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to find nearby stores."
+        }
+      ],
       "expo-secure-store",
       "expo-video",
       "@react-native-google-signin/google-signin",

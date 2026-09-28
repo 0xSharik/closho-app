@@ -8,6 +8,7 @@ import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
+import { friendlyError } from '../../src/utils/friendlyError';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
@@ -72,7 +73,7 @@ export default function ResetPasswordScreen() {
       );
       router.replace('/(tabs)/reels');
     } else {
-      showSnackbar(result.error || 'Failed to reset password. Try again.', 'error');
+      showSnackbar(friendlyError(result.error, 'We could not update your password. Please try again.'), 'error');
     }
   };
 

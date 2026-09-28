@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { env } from '../config/env';
 import { useAuthStore } from '../store/authStore';
+import { logUserActionFailure, logUserEvent } from '../utils/userEventLogger';
 
 const api = axios.create({
   baseURL: env.API_URL,
@@ -10,46 +11,22 @@ const api = axios.create({
   },
 });
 // Request interceptor to attach token
-console.log('[API CONFIG] API_URL:', env.API_URL);
 api.interceptors.request.use(
   async (config) => {
     try {
       const token = useAuthStore.getState().token;
 
-      console.log('[AUTH DEBUG] ===== PROTECTED REQUEST =====');
-      console.log('[AUTH DEBUG] endpoint:', config.url);
-      console.log('[AUTH DEBUG] hasToken:', !!token);
-
-      // TEMPORARY DEBUG ONLY
-      console.log('[AUTH DEBUG] TOKEN:', token);
-      console.log(
-        '[AUTH DEBUG] AUTHORIZATION HEADER:',
-        token ? `Bearer ${token}` : 'NONE'
-      );
-
-      const tokenType = !token
-        ? 'NONE'
-        : token === 'mock-token'
-          ? 'MOCK_TOKEN'
-          : 'REAL_ACCESS_TOKEN';
-
-      console.log('[AUTH DEBUG] tokenType:', tokenType);
-
-      console.log('[API] ===== REQUEST =====');
-      console.log('[API] Method:', config.method);
-      console.log('[API] Base URL:', config.baseURL);
-      console.log('[API] URL:', config.url);
-      console.log(
-        '[API] Full URL:',
-        `${config.baseURL || ''}${config.url || ''}`
-      );
-      console.log('[API] Has auth token:', !!token);
+      logUserEvent('api.request', {
+        method: config.method?.toUpperCase(),
+        path: config.url?.split('?')[0],
+        authenticated: Boolean(token),
+      });
 
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
     } catch (error) {
-      console.error('Error fetching token from storage', error);
+      logUserActionFailure('api.authorization_setup_failed', error);
     }
 
     return config;
@@ -92,18 +69,14 @@ api.interceptors.response.use(
               return api(originalRequest);
             }
           } catch (refreshError) {
-            console.warn('Token refresh failed -> Forcing logout');
+            logUserActionFailure('auth.token_refresh_failed', refreshError);
             logout();
             return Promise.reject(refreshError);
           }
         }
 
         const currentToken = useAuthStore.getState().token;
-        console.log('[AUTH DEBUG] ===== AUTHORIZATION FAILURE =====');
-        console.log('[AUTH DEBUG] endpoint:', url);
-        console.log('[AUTH DEBUG] status: 401');
-        console.log('[AUTH DEBUG] tokenExists:', !!currentToken);
-        console.log('[AUTH DEBUG] action: LOGOUT');
+        logUserEvent('auth.session_expired', { path: url.split('?')[0], hasToken: Boolean(currentToken) });
         logout();
       }
     }

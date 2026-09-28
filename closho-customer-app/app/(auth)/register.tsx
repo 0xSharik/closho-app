@@ -9,24 +9,14 @@ import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
+import { friendlyError } from '../../src/utils/friendlyError';
+import { logUserActionFailure, logUserEvent, logValidationFailure } from '../../src/utils/userEventLogger';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
 
 try {
   if (GoogleSignin && typeof GoogleSignin.configure === 'function') {
-    //temp code
-    console.log(
-      '[GoogleSignIn] Web Client ID exists:',
-      !!process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID
-    );
-
-    console.log(
-      '[GoogleSignIn] Web Client ID suffix:',
-      process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.slice(-25)
-    );
-
-    //upto here
     GoogleSignin.configure({
       webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
     });
@@ -83,11 +73,7 @@ export default function RegisterScreen() {
   const onSubmit = async (data: RegisterForm) => {
     if (isLoading) return;
 
-    console.log('[Register Screen Debug] Form submitted with:', {
-      fullName: data.fullName,
-      email: data.email,
-      phone: data.phone,
-    });
+    logUserEvent('auth.registration_submitted', { method: 'password' });
 
     // Keep the existing register() signature unchanged.
     // The store reads the pending phone and sends it as part of /auth/register.
@@ -97,17 +83,18 @@ export default function RegisterScreen() {
     const result = await useAuthStore.getState().register(data.fullName, data.email, data.password);
     setIsLoading(false);
 
-    console.log('[Register Screen Debug] Result from authStore.register:', result);
-
     if (result.success) {
+      logUserEvent('auth.registration_succeeded', { method: 'password' });
       showSnackbar('Registration successful! Please login.', 'success');
       router.replace('/(auth)/login');
     } else {
-      showSnackbar(result.error || 'Registration failed. Try again.', 'error');
+      logUserEvent('auth.registration_failed', { method: 'password', reason: 'rejected' });
+      showSnackbar(friendlyError(result.error, 'We could not create your account. Please try again.'), 'error');
     }
   };
 
   const handleGoogleLogin = async () => {
+    logUserEvent('auth.registration_submitted', { method: 'google' });
     try {
       if (!GoogleSignin || typeof GoogleSignin.hasPlayServices !== 'function') {
         showSnackbar('Google Sign In requires a custom development build (not available in standard Expo Go).', 'info');
@@ -123,15 +110,19 @@ export default function RegisterScreen() {
         setIsLoading(false);
 
         if (result.success) {
+          logUserEvent('auth.registration_succeeded', { method: 'google' });
           router.replace('/(tabs)/reels');
           showSnackbar('Successfully logged in with Google!', 'success');
         } else {
-          showSnackbar(result.error || 'Google Login failed on server.', 'error');
+          logUserEvent('auth.registration_failed', { method: 'google', reason: 'backend_rejected' });
+          showSnackbar(friendlyError(result.error, 'Google sign-in failed. Please try again.'), 'error');
         }
       } else {
+        logUserEvent('auth.registration_failed', { method: 'google', reason: 'missing_token' });
         showSnackbar('Google Sign In cancelled or missing token.', 'error');
       }
     } catch (error: any) {
+      logUserActionFailure('auth.registration_failed', error, { method: 'google' });
       if (error.code === statusCodes.SIGN_IN_CANCELLED) {
         // user cancelled the login flow
       } else if (error.code === statusCodes.IN_PROGRESS) {
@@ -139,7 +130,7 @@ export default function RegisterScreen() {
       } else if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
         showSnackbar('Google Play Services not available or outdated.', 'error');
       } else {
-        showSnackbar('Google Sign In error: ' + error.message, 'error');
+        showSnackbar(friendlyError(error?.message, 'Google sign-in failed. Please try again.'), 'error');
       }
     }
   };
@@ -224,7 +215,7 @@ export default function RegisterScreen() {
 
           <Button
             title="Register"
-            onPress={handleSubmit(onSubmit)}
+            onPress={handleSubmit(onSubmit, (formErrors) => logValidationFailure('auth.registration', Object.keys(formErrors)))}
             isLoading={isLoading}
             style={styles.registerBtn}
           />

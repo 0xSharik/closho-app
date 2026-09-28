@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Product } from '../components/product/ProductCard';
+import { logUserActionFailure, logUserEvent } from '../utils/userEventLogger';
 
 interface WishlistState {
   items: Product[];
@@ -21,22 +22,30 @@ export const useWishlistStore = create<WishlistState>()(
         const api = require('../services/api').default;
         try {
           if (exists) {
+            logUserEvent('wishlist.remove_submitted', { productId: product.id });
             await api.delete(`/wishlist/${product.id}`);
             set({ items: items.filter(item => item.id !== product.id) });
+            logUserEvent('wishlist.remove_succeeded', { productId: product.id });
           } else {
+            logUserEvent('wishlist.add_submitted', { productId: product.id });
             await api.post('/wishlist', { productId: product.id });
             set({ items: [...items, product] });
+            logUserEvent('wishlist.add_succeeded', { productId: product.id });
           }
         } catch (error) {
+          logUserActionFailure(exists ? 'wishlist.remove_failed' : 'wishlist.add_failed', error, { productId: product.id });
           console.error('Toggle wishlist error', error);
         }
       },
       removeFromWishlist: async (id) => {
         try {
+          logUserEvent('wishlist.remove_submitted', { productId: id });
           const api = require('../services/api').default;
           await api.delete(`/wishlist/${id}`);
           set({ items: get().items.filter(item => item.id !== id) });
+          logUserEvent('wishlist.remove_succeeded', { productId: id });
         } catch (error) {
+          logUserActionFailure('wishlist.remove_failed', error, { productId: id });
           console.error('Remove from wishlist error', error);
         }
       },

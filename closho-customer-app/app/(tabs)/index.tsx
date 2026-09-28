@@ -16,6 +16,7 @@ import { useAuthStore } from '../../src/store/authStore';
 import { useProfileStore } from '../../src/store/profileStore';
 import { useReelsStore } from '../../src/store/reelsStore';
 import { useStoreStore } from '../../src/store/storeStore';
+import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -24,11 +25,15 @@ export default function HomeScreen() {
   const { reels, fetchReels } = useReelsStore();
   const { addresses, fetchAddresses } = useProfileStore();
   const { user } = useAuthStore();
+  const { showSnackbar } = useSnackbar();
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isAddressModalVisible, setIsAddressModalVisible] = useState(false);
   const [isStoreModalVisible, setIsStoreModalVisible] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [gpsLocationLabel, setGpsLocationLabel] = useState<string | null>(null);
+  const [isResolvingLocation, setIsResolvingLocation] = useState(false);
 
   // Stable shuffle for Recommendations — only re-shuffles when products array changes
   const shuffledProducts = useMemo(
@@ -65,6 +70,9 @@ export default function HomeScreen() {
           accuracy: Location.Accuracy.Balanced,
         });
 
+        // Reverse geocode to get a human-readable label for the header
+        resolveLocationLabel(location.coords.latitude, location.coords.longitude);
+
         await fetchNearestStore(location.coords.latitude, location.coords.longitude, 15);
       } catch (error) {
         console.warn('Error getting location', error);
@@ -73,6 +81,90 @@ export default function HomeScreen() {
     };
     initLocationAndStores();
   }, []);
+
+  /**
+   * Reverse-geocodes lat/lng and updates the header location label.
+   * Priority: sublocality (neighbourhood) → district → city → region
+   */
+  const resolveLocationLabel = async (lat: number, lng: number) => {
+    try {
+      setIsResolvingLocation(true);
+      const results = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+      if (results && results.length > 0) {
+        const r = results[0];
+        // Build a concise label: prefer subregion/district over full city
+        const label =
+          r.subregion ||
+          r.district ||
+          r.sublocality ||
+          r.name ||
+          r.city ||
+          r.region ||
+          'Current Location';
+        setGpsLocationLabel(label);
+      }
+    } catch (err) {
+      console.warn('[Location] Reverse geocode failed:', err);
+    } finally {
+      setIsResolvingLocation(false);
+    }
+  };
+
+  const useCurrentLocationForHeader = async () => {
+    try {
+      setIsResolvingLocation(true);
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        showSnackbar('Location permission is needed.', 'error');
+        return;
+      }
+      if (Platform.OS === 'android') {
+        await Location.enableNetworkProviderAsync().catch(() => undefined);
+      }
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      await resolveLocationLabel(location.coords.latitude, location.coords.longitude);
+      showSnackbar('Location updated.', 'success');
+      setIsAddressModalVisible(false);
+    } catch (err) {
+      console.warn('[Location] Could not get current location:', err);
+      showSnackbar('Could not get your current location.', 'error');
+    } finally {
+      setIsResolvingLocation(false);
+    }
+  };
+
+  const selectNearestStoreFromCurrentLocation = async () => {
+    if (isLocating) return;
+
+    setIsLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        showSnackbar('Location permission is needed to find stores near you.', 'error');
+        return;
+      }
+
+      if (Platform.OS === 'android') {
+        await Location.enableNetworkProviderAsync().catch(() => undefined);
+      }
+
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      // Also update header label when re-selecting location from store modal
+      resolveLocationLabel(location.coords.latitude, location.coords.longitude);
+      await fetchNearestStore(location.coords.latitude, location.coords.longitude, 15, true);
+      setIsStoreModalVisible(false);
+      showSnackbar('Nearest store selected.', 'success');
+    } catch (error) {
+      console.warn('Unable to select nearest store from current location', error);
+      showSnackbar('We could not get your current location. Please check location services and try again.', 'error');
+    } finally {
+      setIsLocating(false);
+    }
+  };
 
   // Fetch products + addresses when store changes (guarded to prevent double-fire on startup)
   const prevStoreIdRef = React.useRef<string | null | undefined>(undefined);
@@ -149,7 +241,9 @@ export default function HomeScreen() {
             }}>
               <Ionicons name="location-outline" size={14} color={colors.text.secondary} />
               <Text style={styles.deliveryLabel}>Delivery To: </Text>
-              <Text style={styles.storeName} numberOfLines={1}>Home (Sector 14)</Text>
+              <Text style={styles.storeName} numberOfLines={1}>
+                {isResolvingLocation ? 'Locating...' : (gpsLocationLabel || 'Set Location')}
+              </Text>
               <Ionicons name="chevron-down" size={12} color={colors.text.secondary} style={{ marginLeft: 4, marginTop: 2 }} />
             </TouchableOpacity>
           </View>
@@ -354,6 +448,18 @@ export default function HomeScreen() {
               </TouchableOpacity>
             </View>
             <ScrollView style={{ padding: spacing.xl }}>
+              {/* Use Current GPS Location */}
+              <TouchableOpacity
+                style={styles.autoSelectBtn}
+                disabled={isResolvingLocation}
+                onPress={useCurrentLocationForHeader}
+              >
+                <Ionicons name="locate" size={20} color={colors.text.inverse} style={{ marginRight: 8 }} />
+                <Text style={{ color: colors.text.inverse, fontWeight: 'bold' }}>
+                  {isResolvingLocation ? 'Getting Location...' : 'Use Current Location'}
+                </Text>
+              </TouchableOpacity>
+
               {addresses.length === 0 ? (
                 <Text style={{ color: colors.text.secondary, marginBottom: spacing.lg, textAlign: 'center' }}>No saved addresses yet.</Text>
               ) : (
@@ -387,12 +493,15 @@ export default function HomeScreen() {
               </TouchableOpacity>
             </View>
             <ScrollView style={{ padding: spacing.xl }}>
-              <TouchableOpacity style={styles.autoSelectBtn} onPress={() => {
-                // Trigger auto location
-                setIsStoreModalVisible(false);
-              }}>
+              <TouchableOpacity
+                style={styles.autoSelectBtn}
+                disabled={isLocating}
+                onPress={selectNearestStoreFromCurrentLocation}
+              >
                 <Ionicons name="locate" size={20} color={colors.text.inverse} style={{ marginRight: 8 }} />
-                <Text style={{ color: colors.text.inverse, fontWeight: 'bold' }}>Auto-select Nearest Store</Text>
+                <Text style={{ color: colors.text.inverse, fontWeight: 'bold' }}>
+                  {isLocating ? 'Finding your location...' : 'Auto-select Nearest Store'}
+                </Text>
               </TouchableOpacity>
 
               {availableStores.map(store => (

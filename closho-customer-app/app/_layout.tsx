@@ -1,6 +1,7 @@
 import { Slot, useRouter, useSegments } from 'expo-router';
 import { useEffect } from 'react';
 import { useAuthStore } from '../src/store/authStore';
+import { SnackbarProvider } from '../src/components/ui/SnackbarContext';
 
 const PUBLIC_AUTH_ROUTES = new Set([
   'login',
@@ -20,6 +21,9 @@ export default function RootLayout() {
   );
   const isLoading = useAuthStore(
     (state) => state.isLoading
+  );
+  const hasHydrated = useAuthStore(
+    (state) => state.hasHydrated
   );
 
   const inAuthGroup =
@@ -41,7 +45,7 @@ export default function RootLayout() {
       isLoading,
     });
 
-    if (isLoading) {
+    if (!hasHydrated || isLoading) {
       console.log(
         '[AUTH GUARD DEBUG] Auth operation in progress. Skipping routing.'
       );
@@ -93,11 +97,16 @@ export default function RootLayout() {
     currentRoute,
     inAuthGroup,
     isAuthenticated,
+    hasHydrated,
     isLoading,
     isPublicAuthRoute,
     isSplash,
     router,
   ]);
 
-  return <Slot />;
+  return (
+    <SnackbarProvider>
+      <Slot />
+    </SnackbarProvider>
+  );
 }

@@ -10,9 +10,12 @@ import {
 import { Button } from '../../src/components/ui/Button';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useCartStore } from '../../src/store/cartStore';
+import { logUserEvent } from '../../src/utils/userEventLogger';
+import { friendlyError } from '../../src/utils/friendlyError';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
+import { getShippingFee } from '../../src/constants/commerce';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -27,58 +30,24 @@ export default function CartScreen() {
   const [couponCode, setCouponCode] = useState('');
   const { showSnackbar } = useSnackbar();
 
-  // Do not replace an existing local cart with an empty server response.
-  // The current backend request is using a different store ID than the active
-  // store, so fetching here would erase the item already present in Zustand.
+  // Always sync from server when the cart screen comes into focus.
+  // This ensures multi-device cart changes are reflected immediately.
   useFocusEffect(
     useCallback(() => {
-      console.log('[CART SCREEN] ===== SCREEN FOCUSED =====');
-
-      const currentItems = useCartStore.getState().items;
-
-      console.log('[CART SCREEN] Current items:', currentItems.length);
-
-      if (currentItems.length > 0) {
-        console.log(
-          '[CART SCREEN] Local cart already contains items. Skipping fetchCart() ' +
-          'to prevent an empty response from clearing the cart.'
-        );
-        console.log(
-          '[CART SCREEN] Preserved items:',
-          JSON.stringify(currentItems, null, 2)
-        );
-
-        return () => {
-          console.log('[CART SCREEN] ===== SCREEN BLURRED =====');
-        };
-      }
+      console.log('[CART SCREEN] ===== SCREEN FOCUSED — syncing from server =====');
 
       let cancelled = false;
 
       const refresh = async () => {
         try {
-          console.log('[CART SCREEN] Local cart is empty. Calling fetchCart()');
-
           await fetchCart();
 
           if (!cancelled) {
             const latestItems = useCartStore.getState().items;
-
-            console.log(
-              '[CART SCREEN] fetchCart completed. Current item count:',
-              latestItems.length
-            );
-
-            console.log(
-              '[CART SCREEN] Current cart items:',
-              JSON.stringify(latestItems, null, 2)
-            );
+            console.log('[CART SCREEN] fetchCart completed. item count:', latestItems.length);
           }
         } catch (error: any) {
-          console.error(
-            '[CART SCREEN] fetchCart FAILED:',
-            error?.message || error
-          );
+          console.error('[CART SCREEN] fetchCart FAILED:', error?.message || error);
         }
       };
 
@@ -91,18 +60,22 @@ export default function CartScreen() {
     }, [fetchCart]),
   );
 
+
   const updateQuantity = (id: string, delta: number) => {
+    logUserEvent('cart.quantity_change_requested', { itemId: id, delta });
     Haptics.selectionAsync();
     storeUpdateQuantity(id, delta);
   };
 
   const removeItem = (id: string) => {
+    logUserEvent('cart.remove_requested', { itemId: id });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     removeFromCart(id);
   };
 
   const handleClearCart = () => {
+    logUserEvent('cart.clear_requested', { itemCount: items.length });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     clearCart();
@@ -110,14 +83,17 @@ export default function CartScreen() {
   };
 
   const handleApplyCoupon = async () => {
-    if (!couponCode.trim()) return;
+    if (!couponCode.trim()) {
+      logUserEvent('cart.coupon_validation_failed', { fields: 'couponCode' });
+      return;
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const result = await applyCoupon(couponCode.trim());
     if (result.success) {
       showSnackbar(result.message, 'success');
       setCouponCode('');
     } else {
-      showSnackbar(result.message, 'error');
+      showSnackbar(friendlyError(result.message, 'That coupon could not be applied. Please check the code and try again.'), 'error');
     }
   };
 
@@ -152,7 +128,7 @@ export default function CartScreen() {
   }
 
   const subtotal = getCartTotal();
-  const shipping = subtotal > 0 ? 99 : 0;
+  const shipping = getShippingFee(subtotal);
   const total = Math.max(0, subtotal - discountAmount + shipping);
 
   return (
@@ -260,6 +236,7 @@ export default function CartScreen() {
           <Button
             title="Proceed to Checkout"
             onPress={() => {
+              logUserEvent('checkout.started', { itemCount: items.length });
               Haptics.impactAsync();
               router.push('/checkout');
             }}

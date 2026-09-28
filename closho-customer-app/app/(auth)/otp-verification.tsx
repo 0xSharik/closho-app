@@ -8,6 +8,7 @@ import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
+import { friendlyError } from '../../src/utils/friendlyError';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
@@ -126,7 +127,7 @@ export default function OtpVerificationScreen() {
 
       console.log('[OTP SCREEN DEBUG] OTP VERIFY FAILED:', result.error);
 
-      showSnackbar(result.error || 'Invalid OTP. Please try again.', 'error');
+      showSnackbar(friendlyError(result.error, 'The code you entered is incorrect. Please try again.'), 'error');
     } catch (error: any) {
       console.log('[OTP SCREEN DEBUG] OTP VERIFY UNEXPECTED ERROR:', {
         message: error?.message,
@@ -135,7 +136,7 @@ export default function OtpVerificationScreen() {
 
       setIsLoading(false);
       showSnackbar(
-        error?.message || 'OTP verification failed. Please try again.',
+        friendlyError(error?.message, 'We could not verify that code. Please try again.'),
         'error'
       );
     }
@@ -179,8 +180,7 @@ export default function OtpVerificationScreen() {
         } else {
           console.log('[OTP SCREEN DEBUG] REGISTRATION OTP RESEND FAILED:', result.error);
           showSnackbar(
-            result.error ||
-            'Failed to resend registration OTP.',
+            friendlyError(result.error, 'We could not send a new code. Please try again.'),
             'error'
           );
         }
@@ -201,7 +201,7 @@ export default function OtpVerificationScreen() {
       } else {
         console.log('[OTP SCREEN DEBUG] PASSWORD RESET OTP RESEND FAILED:', result.error);
         showSnackbar(
-          result.error || 'Failed to resend OTP. Please try again.',
+          friendlyError(result.error, 'We could not send a new code. Please try again.'),
           'error'
         );
       }
@@ -212,7 +212,7 @@ export default function OtpVerificationScreen() {
       });
 
       showSnackbar(
-        error?.message || 'Failed to resend OTP. Please try again.',
+        friendlyError(error?.message, 'We could not send a new code. Please try again.'),
         'error'
       );
     } finally {
@@ -263,7 +263,7 @@ export default function OtpVerificationScreen() {
 
             <Button
               title="Verify Code"
-              onPress={handleSubmit(onSubmit)}
+              onPress={handleSubmit(onSubmit, () => showSnackbar('Enter the 6-digit code from your email.', 'error'))}
               isLoading={isLoading}
               style={styles.verifyBtn}
             />

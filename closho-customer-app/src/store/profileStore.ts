@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { logUserActionFailure, logUserEvent } from '../utils/userEventLogger';
 
 export interface Address {
   id: string;
@@ -69,6 +70,7 @@ export const useProfileStore = create<ProfileState>()(
       },
       addAddress: async (address) => {
         try {
+          logUserEvent('address.create_submitted', { type: address.type, isDefault: address.isDefault });
           const api = require('../services/api').default;
           // Strip empty-string optional fields — some backends reject "" for optional fields
           const payload: any = { ...address };
@@ -82,12 +84,13 @@ export const useProfileStore = create<ProfileState>()(
               payload.phone = `+${digits}`;
             }
           }
-          console.log('[addAddress] payload:', JSON.stringify(payload, null, 2));
           const res = await api.post('/user/addresses', payload);
           if (res.data.success) {
             await get().fetchAddresses();
+            logUserEvent('address.create_succeeded', { type: address.type });
             return { success: true };
           }
+          logUserEvent('address.create_failed', { reason: 'rejected' });
           return { success: false, message: res.data.message };
         } catch (error: any) {
           // Surface the actual backend validation message, not just the axios error string
@@ -96,40 +99,53 @@ export const useProfileStore = create<ProfileState>()(
             error.response?.data?.errors?.[0]?.message ||
             error.message ||
             'Failed to add address';
-          console.warn('[addAddress] error:', JSON.stringify(error.response?.data, null, 2));
+          logUserActionFailure('address.create_failed', error);
           return { success: false, message: msg };
         }
       },
       updateAddress: async (id, address) => {
         try {
+          logUserEvent('address.update_submitted', { addressId: id });
           const api = require('../services/api').default;
           const res = await api.put(`/user/addresses/${id}`, address);
           if (res.data.success) {
             await get().fetchAddresses();
+            logUserEvent('address.update_succeeded', { addressId: id });
             return { success: true };
           }
+          logUserEvent('address.update_failed', { addressId: id, reason: 'rejected' });
           return { success: false, message: res.data.message };
         } catch (error: any) {
+          logUserActionFailure('address.update_failed', error, { addressId: id });
           return { success: false, message: error.message };
         }
       },
       removeAddress: async (id) => {
         try {
+          logUserEvent('address.remove_submitted', { addressId: id });
           const api = require('../services/api').default;
           await api.delete(`/user/addresses/${id}`);
           await get().fetchAddresses();
+          logUserEvent('address.remove_succeeded', { addressId: id });
           return { success: true };
         } catch (error) {
+          logUserActionFailure('address.remove_failed', error, { addressId: id });
           return { success: false };
         }
       },
       setDefaultAddress: async (id) => {
         try {
+          logUserEvent('address.set_default_submitted', { addressId: id });
           const address = get().addresses.find(a => a.id === id);
-          if (!address) return { success: false };
+          if (!address) {
+            logUserEvent('address.set_default_failed', { addressId: id, reason: 'not_found' });
+            return { success: false };
+          }
           await get().updateAddress(id, { ...address, isDefault: true });
+          logUserEvent('address.set_default_succeeded', { addressId: id });
           return { success: true };
         } catch (error) {
+          logUserActionFailure('address.set_default_failed', error, { addressId: id });
           return { success: false };
         }
       },

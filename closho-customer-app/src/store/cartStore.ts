@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { useStoreStore } from './storeStore';
+import { logUserActionFailure, logUserEvent } from '../utils/userEventLogger';
 
 export interface CartItem {
   id: string;
@@ -33,6 +34,10 @@ interface CartState {
   clearCart: () => Promise<void>;
   getCartTotal: () => number;
   fetchCart: () => Promise<void>;
+  /** Call this right after a successful login to sync the server cart to this device. */
+  syncCartAfterLogin: () => Promise<void>;
+  /** Call this on logout to wipe local cart state. */
+  resetCartState: () => void;
 }
 
 // ─── Module-level lock: prevents concurrent addToCart calls regardless of component re-renders ───
@@ -50,12 +55,13 @@ export const useCartStore = create<CartState>()(
       addToCart: async (newItem) => {
         // Hard lock — if already in-flight, reject immediately
         if (_isAddingToCart) {
-          console.warn('[CART] addToCart blocked — already in progress');
+          logUserEvent('cart.add_blocked', { reason: 'request_in_progress' });
           return { success: false, message: 'Please wait, adding to cart...' };
         }
         _isAddingToCart = true;
 
         try {
+          logUserEvent('cart.add_submitted', { productId: newItem.productId, hasVariant: Boolean(newItem.variantId) });
           const api = require('../services/api').default;
           const currentStore = useStoreStore.getState().currentStore;
 
@@ -72,10 +78,12 @@ export const useCartStore = create<CartState>()(
           );
 
           if (existingItem) {
+            logUserEvent('cart.quantity_increment_submitted', { itemId: existingItem.id });
             console.log('[CART] Same store/product/variant already exists.');
             console.log('[CART] Existing item:', existingItem.id);
             console.log('[CART] Incrementing quantity by 1.');
             await get().updateQuantity(existingItem.id, 1);
+            logUserEvent('cart.quantity_increment_succeeded', { itemId: existingItem.id });
             return { success: true, message: 'Cart updated' };
           }
 
@@ -113,10 +121,13 @@ export const useCartStore = create<CartState>()(
               console.log('[CART] activeStoreIds:', nextStoreIds);
             }
             await get().fetchCart();
+            logUserEvent('cart.add_succeeded', { productId: newItem.productId });
             return { success: true };
           }
+          logUserEvent('cart.add_failed', { productId: newItem.productId, reason: 'rejected' });
           return { success: false, message: res.data.message || 'Failed to add to cart' };
         } catch (error: any) {
+          logUserActionFailure('cart.add_failed', error, { productId: newItem.productId });
           console.warn('[CART] === ADD TO CART ERROR ===');
           console.warn('[CART] Error data:', JSON.stringify(error.response?.data, null, 2));
           console.warn('[CART] Error message:', error.message);
@@ -132,10 +143,13 @@ export const useCartStore = create<CartState>()(
 
       removeFromCart: async (id) => {
         try {
+          logUserEvent('cart.remove_submitted', { itemId: id });
           set((state) => ({ items: state.items.filter((item) => item.id !== id) }));
           const api = require('../services/api').default;
           await api.delete(`/cart/items/${id}`);
+          logUserEvent('cart.remove_succeeded', { itemId: id });
         } catch (error) {
+          logUserActionFailure('cart.remove_failed', error, { itemId: id });
           console.warn('[CART] Remove error', error);
           await get().fetchCart();
         }
@@ -145,7 +159,10 @@ export const useCartStore = create<CartState>()(
         try {
           const state = get();
           const item = state.items.find(i => i.id === id);
-          if (!item) return;
+          if (!item) {
+            logUserEvent('cart.quantity_change_failed', { itemId: id, reason: 'item_not_found' });
+            return;
+          }
           const newQty = Math.max(1, item.quantity + delta);
 
           set((state) => ({
@@ -156,7 +173,9 @@ export const useCartStore = create<CartState>()(
 
           const api = require('../services/api').default;
           await api.patch(`/cart/items/${id}`, { quantity: newQty });
+          logUserEvent('cart.quantity_change_succeeded', { itemId: id, quantity: newQty });
         } catch (error) {
+          logUserActionFailure('cart.quantity_change_failed', error, { itemId: id });
           console.warn('[CART] Update quantity error', error);
           await get().fetchCart();
         }
@@ -164,6 +183,7 @@ export const useCartStore = create<CartState>()(
 
       applyCoupon: async (code) => {
         try {
+          logUserEvent('cart.coupon_apply_submitted', { hasCode: Boolean(code) });
           const api = require('../services/api').default;
           const savedStoreId = get().activeStoreId;
           const currentStoreId = useStoreStore.getState().currentStore?.id;
@@ -173,10 +193,13 @@ export const useCartStore = create<CartState>()(
           if (res.data.success) {
             const discount = res.data.data?.discountAmount || 0;
             set({ couponCode: code.toUpperCase(), discountAmount: discount });
+            logUserEvent('cart.coupon_apply_succeeded', { hasDiscount: discount > 0 });
             return { success: true, message: 'Coupon applied successfully!' };
           }
+          logUserEvent('cart.coupon_apply_failed', { reason: 'invalid_or_rejected' });
           return { success: false, message: res.data.message || 'Invalid coupon.' };
         } catch (error: any) {
+          logUserActionFailure('cart.coupon_apply_failed', error);
           console.warn('[CART] Apply coupon error', error?.message || error);
           return { success: false, message: error.response?.data?.message || 'Failed to apply coupon.' };
         }
@@ -186,6 +209,7 @@ export const useCartStore = create<CartState>()(
 
       clearCart: async () => {
         try {
+          logUserEvent('cart.clear_submitted', { itemCount: get().items.length });
           const api = require('../services/api').default;
           const currentStoreId = useStoreStore.getState().currentStore?.id;
           const savedStoreId = get().activeStoreId;
@@ -214,6 +238,7 @@ export const useCartStore = create<CartState>()(
 
           if (storeIds.length === 0) {
             await api.delete('/cart');
+            logUserEvent('cart.clear_succeeded', { storeCount: 0 });
             return;
           }
 
@@ -231,7 +256,9 @@ export const useCartStore = create<CartState>()(
               }
             })
           );
+          logUserEvent('cart.clear_succeeded', { storeCount: storeIds.length });
         } catch (error) {
+          logUserActionFailure('cart.clear_failed', error);
           console.warn('[CART] Clear cart error', error);
           await get().fetchCart();
         }
@@ -239,6 +266,67 @@ export const useCartStore = create<CartState>()(
 
       getCartTotal: () => {
         return get().items.reduce((total, item) => total + item.price * item.quantity, 0);
+      },
+
+      resetCartState: () => {
+        set({
+          items: [],
+          couponCode: null,
+          discountAmount: 0,
+          activeStoreId: null,
+          activeStoreIds: [],
+        });
+      },
+
+      syncCartAfterLogin: async () => {
+        console.log('[CART] ===== SYNC AFTER LOGIN =====');
+        // 1. Wipe any stale local cart from a different device/session.
+        set({
+          items: [],
+          couponCode: null,
+          discountAmount: 0,
+          activeStoreId: null,
+          activeStoreIds: [],
+        });
+
+        try {
+          // 2. Fetch all available stores.
+          // IMPORTANT: call getState() again AFTER fetchAllStores resolves so we
+          // read the freshly updated store list, not the snapshot from before the fetch.
+          const useStoreStoreModule = require('./storeStore').useStoreStore;
+          await useStoreStoreModule.getState().fetchAllStores();
+
+          // Re-read state after the async fetch completes
+          const freshStoreState = useStoreStoreModule.getState();
+          const allStores: any[] = freshStoreState.availableStores || [];
+          const currentStore = freshStoreState.currentStore;
+
+          // Build the list of store IDs to check.
+          const storeIds = Array.from(
+            new Set(
+              [
+                currentStore?.id,
+                ...allStores.map((s: any) => s.id),
+              ].filter(Boolean) as string[]
+            )
+          );
+
+          console.log('[CART] syncCartAfterLogin — stores found:', storeIds.length, '| ids:', storeIds);
+
+          if (storeIds.length > 0) {
+            // Seed activeStoreIds so fetchCart knows which stores to query.
+            set({
+              activeStoreIds: storeIds,
+              activeStoreId: currentStore?.id || storeIds[0] || null,
+            });
+          }
+
+          // 3. Fetch the merged server cart (uses the storeIds we just seeded).
+          await get().fetchCart();
+          console.log('[CART] syncCartAfterLogin — completed. items:', get().items.length);
+        } catch (err: any) {
+          console.warn('[CART] syncCartAfterLogin error:', err?.message || err);
+        }
       },
 
       fetchCart: async () => {

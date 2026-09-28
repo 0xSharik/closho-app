@@ -4,6 +4,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { AuthState, User } from '../types/auth.types';
 
 interface AuthStore extends AuthState {
+  hasHydrated: boolean;
   pendingPhone: string | null;
   pendingEmail: string | null;
   pendingOtp: string | null;
@@ -65,6 +66,7 @@ export const useAuthStore = create<AuthStore>()(
       sessionId: null,
       sessions: [],
       isAuthenticated: false,
+      hasHydrated: false,
       isLoading: false,
       error: null,
       otpFlowUsed: null as ('phone_verification' | 'password_reset' | 'registration' | null),
@@ -108,6 +110,8 @@ export const useAuthStore = create<AuthStore>()(
             console.log('[AUTH DEBUG] tokenLength:', accessToken?.length ?? 0);
             console.log('[AUTH DEBUG] userExists:', !!user);
             console.log('[AUTH DEBUG] isAuthenticated: true');
+            // Sync server cart to this device after login
+            require('./cartStore').useCartStore.getState().syncCartAfterLogin();
             return { success: true };
           } else {
             set({ error: response.data.message || 'Login failed', isLoading: false });
@@ -130,6 +134,8 @@ export const useAuthStore = create<AuthStore>()(
           if (response.data.success) {
             const { user, accessToken, refreshToken, sessionId } = response.data.data;
             set({ user, token: accessToken, refreshToken, sessionId, isAuthenticated: true, error: null, isLoading: false });
+            // Sync server cart to this device after Google login
+            require('./cartStore').useCartStore.getState().syncCartAfterLogin();
             return { success: true };
           } else {
             set({ error: response.data.message || 'Google Login failed', isLoading: false });
@@ -441,6 +447,9 @@ export const useAuthStore = create<AuthStore>()(
               } catch (_) {
                 // Profile fetch is optional after successful authentication.
               }
+
+              // Sync server cart to this device after OTP login
+              require('./cartStore').useCartStore.getState().syncCartAfterLogin();
 
               return { success: true };
             }
@@ -1103,6 +1112,8 @@ export const useAuthStore = create<AuthStore>()(
         try {
           const api = require('../services/api').default;
           await api.post('/auth/logout').catch(() => { }); // Ignore logout errors
+          // Clear local cart so it doesn't bleed into next login/account
+          require('./cartStore').useCartStore.getState().resetCartState();
           set({
             user: null,
             token: null,
@@ -1154,6 +1165,8 @@ export const useAuthStore = create<AuthStore>()(
           const api = require('../services/api').default;
           const response = await api.post('/auth/logout-all');
           if (response.data.success) {
+            // Clear local cart so it doesn't bleed into next login/account
+            require('./cartStore').useCartStore.getState().resetCartState();
             set({
               user: null,
               token: null,
@@ -1182,7 +1195,14 @@ export const useAuthStore = create<AuthStore>()(
     {
       name: 'auth-storage',
       storage: createJSONStorage(() => safeStorage),
-      onRehydrateStorage: () => (state) => {
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          console.warn('[App Startup] Unable to restore auth state:', error);
+        }
+        // `setState` notifies subscribers such as the root navigation guard.
+        // Mark failure as complete too, so a storage error cannot trap the app
+        // behind its splash screen.
+        useAuthStore.setState({ hasHydrated: true, isLoading: false });
         console.log('[App Startup] Zustand hydration complete. Auth state:', state?.isAuthenticated);
       },
     }

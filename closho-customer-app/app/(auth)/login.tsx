@@ -10,25 +10,14 @@ import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
+import { friendlyError } from '../../src/utils/friendlyError';
+import { logUserActionFailure, logUserEvent, logValidationFailure } from '../../src/utils/userEventLogger';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
 
 try {
   if (GoogleSignin && typeof GoogleSignin.configure === 'function') {
-    //temp code
-    console.log(
-      '[GoogleSignIn] Web Client ID exists:',
-      !!process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID
-    );
-
-    console.log(
-      '[GoogleSignIn] Web Client ID suffix:',
-      process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.slice(-25)
-    );
-
-
-    //upto here
     GoogleSignin.configure({
       webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
     });
@@ -81,19 +70,26 @@ export default function LoginScreen() {
   });
 
   const onSubmitEmail = async (data: LoginForm) => {
+    logUserEvent('auth.login_submitted', { method: 'password' });
     setIsLoading(true);
     const result = await useAuthStore.getState().login(data.emailOrPhone, data.password);
     setIsLoading(false);
 
     if (result.success) {
+      logUserEvent('auth.login_succeeded', { method: 'password' });
       showSnackbar('Successfully logged in!', 'success');
     } else {
-      showSnackbar(result.error || 'Invalid credentials. Please try again.', 'error');
+      const reason = /invalid|wrong|credential|unauthorized/i.test(result.error || '')
+        ? 'invalid_credentials'
+        : 'rejected';
+      logUserEvent('auth.login_failed', { method: 'password', reason });
+      showSnackbar(friendlyError(result.error, 'The email or password you entered is incorrect.'), 'error');
     }
   };
 
   const handleSendOtp = async () => {
     if (phone.length < 10) {
+      logValidationFailure('auth.otp_login', ['phone']);
       showSnackbar('Please enter a valid 10-digit phone number', 'error');
       return;
     }
@@ -103,19 +99,23 @@ export default function LoginScreen() {
     setIsLoading(false);
 
     if (result.success) {
+      logUserEvent('auth.otp_sent', { flow: 'login' });
       setIsOtpSent(true);
       showSnackbar('OTP sent successfully!', 'success');
     } else if (result.errorCode === 'USER_NOT_FOUND') {
+      logUserEvent('auth.otp_send_failed', { reason: 'user_not_found' });
       setPhoneNotFound(true);
       useAuthStore.getState().setPendingPhone(phone);
-      console.log('[AUTH DEBUG] USER_NOT_FOUND -> showing registration option for:', phone);
+      logUserEvent('auth.registration_suggested', { reason: 'user_not_found' });
     } else {
-      showSnackbar(result.error || 'Failed to send OTP. Please try again.', 'error');
+      logUserEvent('auth.otp_send_failed', { reason: 'rejected' });
+      showSnackbar(friendlyError(result.error, 'We could not send a code. Please try again.'), 'error');
     }
   };
 
   const handleVerifyOtp = async () => {
     if (otp.length !== 6) {
+      logValidationFailure('auth.otp_verification', ['otp']);
       showSnackbar('Please enter the 6-digit OTP', 'error');
       return;
     }
@@ -129,7 +129,8 @@ export default function LoginScreen() {
     console.log('[AUTH DEBUG] hasResetToken:', !!result.resetToken);
 
     if (!result.success) {
-      showSnackbar(result.error || 'Invalid OTP.', 'error');
+      logUserEvent('auth.otp_verification_failed', { reason: 'invalid_or_expired' });
+      showSnackbar(friendlyError(result.error, 'The code you entered is incorrect. Please try again.'), 'error');
       return;
     }
 
@@ -145,12 +146,14 @@ export default function LoginScreen() {
     }
 
     if (useAuthStore.getState().isAuthenticated) {
+      logUserEvent('auth.login_succeeded', { method: 'otp' });
       console.log('[AUTH DEBUG] OTP login succeeded with real access token.');
       showSnackbar('Successfully logged in!', 'success');
     }
   };
 
   const handleGoogleLogin = async () => {
+    logUserEvent('auth.login_submitted', { method: 'google' });
     console.log('[GoogleSignIn] ===== BUTTON PRESSED =====');
 
     try {
@@ -199,15 +202,7 @@ export default function LoginScreen() {
 
       const response = await GoogleSignin.signIn();
 
-      console.log(
-        '[GoogleSignIn] Response:',
-        JSON.stringify(response, null, 2)
-      );
-
       const idToken = response.data?.idToken;
-
-      console.log('[GoogleSignIn] Has ID token:', !!idToken);
-      console.log('[GoogleSignIn] Token length:', idToken?.length);
 
       if (idToken) {
         console.log('[GoogleSignIn] Calling backend /auth/google...');
@@ -218,11 +213,10 @@ export default function LoginScreen() {
           .getState()
           .googleLogin(idToken);
 
-        console.log('[GoogleSignIn] Backend result:', result);
-
         setIsLoading(false);
 
         if (result.success) {
+          logUserEvent('auth.login_succeeded', { method: 'google' });
           console.log('[GoogleSignIn] LOGIN SUCCESS');
 
           showSnackbar(
@@ -230,14 +224,16 @@ export default function LoginScreen() {
             'success'
           );
         } else {
+          logUserEvent('auth.login_failed', { method: 'google', reason: 'backend_rejected' });
           console.log('[GoogleSignIn] BACKEND LOGIN FAILED:', result.error);
 
           showSnackbar(
-            result.error || 'Google Login failed on server.',
+            friendlyError(result.error, 'Google sign-in failed. Please try again.'),
             'error'
           );
         }
       } else {
+        logUserEvent('auth.login_failed', { method: 'google', reason: 'missing_token' });
         console.log('[GoogleSignIn] NO ID TOKEN');
 
         showSnackbar(
@@ -247,6 +243,7 @@ export default function LoginScreen() {
       }
 
     } catch (error: any) {
+      logUserActionFailure('auth.login_failed', error, { method: 'google' });
 
       console.log('[GoogleSignIn] ===== ERROR =====');
       console.log('[GoogleSignIn] Error:', error);
@@ -274,7 +271,7 @@ export default function LoginScreen() {
         console.log('[GoogleSignIn] UNKNOWN GOOGLE ERROR');
 
         showSnackbar(
-          'Google Sign In error: ' + error.message,
+          friendlyError(error?.message, 'Google sign-in failed. Please try again.'),
           'error'
         );
       }
@@ -337,7 +334,7 @@ export default function LoginScreen() {
 
               <Button
                 title={isLoading ? "Signing in..." : "Sign In"}
-                onPress={handleSubmit(onSubmitEmail)}
+                onPress={handleSubmit(onSubmitEmail, (formErrors) => logValidationFailure('auth.login', Object.keys(formErrors)))}
                 disabled={isLoading}
               />
             </View>

@@ -9,7 +9,7 @@ import { typography } from '../../src/theme/typography';
 
 export default function SplashScreen() {
   const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuthStore();
+  const { isAuthenticated, isLoading, hasHydrated } = useAuthStore();
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
@@ -24,7 +24,7 @@ export default function SplashScreen() {
     ]).start();
 
     // Only proceed if SecureStore loading is complete
-    if (isLoading) return;
+    if (isLoading || !hasHydrated) return;
 
     const timer = setTimeout(() => {
       if (isAuthenticated) {
@@ -35,7 +35,7 @@ export default function SplashScreen() {
     }, 3000); // 3-second splash
 
     return () => clearTimeout(timer);
-  }, [isAuthenticated, isLoading, router]);
+  }, [hasHydrated, isAuthenticated, isLoading, router]);
 
   return (
     <View style={styles.container}>

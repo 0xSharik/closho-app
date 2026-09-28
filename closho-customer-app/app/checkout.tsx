@@ -1,17 +1,20 @@
-import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, Animated, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../src/theme/colors';
-import { typography } from '../src/theme/typography';
-import { spacing } from '../src/theme/spacing';
-import { Button } from '../src/components/ui/Button';
 import * as Haptics from 'expo-haptics';
-import { useCartStore } from '../src/store/cartStore';
-import { useProfileStore } from '../src/store/profileStore';
-import { useOrderStore } from '../src/store/orderStore';
-import { useStoreStore } from '../src/store/storeStore';
+import { useRouter } from 'expo-router';
+import { useRef, useState } from 'react';
+import { Animated, Modal, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Button } from '../src/components/ui/Button';
 import { useSnackbar } from '../src/components/ui/SnackbarContext';
+import { getShippingFee } from '../src/constants/commerce';
+import { useCartStore } from '../src/store/cartStore';
+import { useOrderStore } from '../src/store/orderStore';
+import { useProfileStore } from '../src/store/profileStore';
+import { useStoreStore } from '../src/store/storeStore';
+import { colors } from '../src/theme/colors';
+import { spacing } from '../src/theme/spacing';
+import { typography } from '../src/theme/typography';
+import { friendlyError } from '../src/utils/friendlyError';
+import { logUserActionFailure, logUserEvent } from '../src/utils/userEventLogger';
 let RazorpayCheckout: any = null;
 try {
   const RazorpayModule = require('react-native-razorpay');
@@ -46,22 +49,25 @@ export default function CheckoutScreen() {
 
   // --- Price calculations from real cart data ---
   const subtotal = getCartTotal();
-  const shipping = subtotal > 0 ? 99 : 0; // flat ₹99 shipping
+  const shipping = getShippingFee(subtotal);
   const total = Math.max(0, subtotal - discountAmount + shipping);
   const itemCount = items.reduce((sum, i) => sum + i.quantity, 0);
 
   const handleSelectAddress = (id: string) => {
+    logUserEvent('checkout.address_selected', { addressId: id });
     Haptics.selectionAsync();
     setSelectedAddressId(id);
   };
 
   const handleSelectPayment = (id: string) => {
+    logUserEvent('checkout.payment_method_selected', { paymentMethodId: id });
     Haptics.selectionAsync();
     setSelectedPaymentId(id);
   };
 
   const handlePlaceOrder = async () => {
     if (!selectedAddressId) {
+      logUserEvent('checkout.validation_failed', { fields: 'address' });
       showSnackbar('Please select a delivery address', 'error');
       return;
     }
@@ -69,34 +75,35 @@ export default function CheckoutScreen() {
     // Resolve storeId: cart's activeStoreId is most reliable (it's the store where items were added)
     // then fall back to currentStore, then fetch all stores
     let activeStore = currentStore || useStoreStore.getState().availableStores[0];
-    
+
     // If cartActiveStoreId is set, prefer it — it's the authoritative store for this cart
-    const resolvedStoreId = cartActiveStoreId 
-      || currentStore?.id 
+    const resolvedStoreId = cartActiveStoreId
+      || currentStore?.id
       || useStoreStore.getState().availableStores[0]?.id;
 
     if (!resolvedStoreId) {
       await useStoreStore.getState().fetchAllStores();
       activeStore = useStoreStore.getState().availableStores[0];
     }
-    
+
     const finalStoreId = resolvedStoreId || activeStore?.id;
     console.log('[checkout] resolvedStoreId:', finalStoreId, '| cartActiveStoreId:', cartActiveStoreId, '| currentStore?.id:', currentStore?.id);
 
     if (!finalStoreId) {
+      logUserEvent('checkout.validation_failed', { fields: 'store' });
       showSnackbar('No store available. Please try again later.', 'error');
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsPlacingOrder(true);
-    
+
     try {
       // Resolve payment method — works for both real saved methods and fallback defaults (id='cod', id='razorpay')
       const fallbackMethods: Record<string, string> = { cod: 'cod', razorpay: 'razorpay' };
       const savedMethod = paymentMethods.find(p => p.id === selectedPaymentId)?.brand?.toLowerCase();
       const resolvedMethod = savedMethod || fallbackMethods[selectedPaymentId] || 'cod';
       const isRazorpay = resolvedMethod === 'razorpay' || resolvedMethod === 'card' || resolvedMethod === 'upi';
-      
+
       const response = await createOrder({
         storeId: finalStoreId,
         addressId: selectedAddressId,
@@ -105,6 +112,7 @@ export default function CheckoutScreen() {
       });
 
       if (response.success) {
+        logUserEvent('checkout.order_created', { paymentMethod: isRazorpay ? 'razorpay' : 'cod', itemCount });
         // If COD, just show success directly
         if (!isRazorpay) {
           handleSuccessOrder();
@@ -114,6 +122,7 @@ export default function CheckoutScreen() {
         // Razorpay Flow
         if (Platform.OS === 'web' || !RazorpayCheckout || typeof RazorpayCheckout.open !== 'function') {
           showSnackbar('Razorpay native checkout requires custom build. Simulating successful order...', 'info');
+          logUserEvent('checkout.payment_simulated', { reason: 'native_module_unavailable' });
           handleSuccessOrder();
           return;
         }
@@ -132,16 +141,20 @@ export default function CheckoutScreen() {
         try {
           console.log('[Razorpay] Opening checkout with options:', JSON.stringify({ ...options, key: '***' }));
           const data = await RazorpayCheckout.open(options);
+          logUserEvent('checkout.payment_succeeded', { provider: 'razorpay' });
           handleSuccessOrder();
         } catch (error: any) {
+          logUserActionFailure('checkout.payment_failed', error, { provider: 'razorpay' });
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           showSnackbar('Payment failed or cancelled', 'error');
         }
       } else {
+        logUserEvent('checkout.order_creation_failed', { reason: 'rejected' });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        showSnackbar(response.error || 'Failed to place order', 'error');
+        showSnackbar(friendlyError(response.error, 'We could not place your order. Please try again.'), 'error');
       }
     } catch (e) {
+      logUserActionFailure('checkout.order_creation_failed', e);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       showSnackbar('Something went wrong', 'error');
     } finally {
@@ -150,6 +163,7 @@ export default function CheckoutScreen() {
   };
 
   const handleSuccessOrder = () => {
+    logUserEvent('checkout.completed', { itemCount });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     clearCart();
     setShowSuccessModal(true);
@@ -246,7 +260,7 @@ export default function CheckoutScreen() {
               { id: 'razorpay', brand: 'Razorpay / Card / UPI', last4: '', exp: '', isDefault: true },
               { id: 'cod', brand: 'Cash on Delivery', last4: '', exp: '', isDefault: false }
             ];
-            
+
             const displayMethods = paymentMethods.length > 0 ? paymentMethods : defaultMethods;
 
             return displayMethods.map((pm) => (
