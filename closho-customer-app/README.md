@@ -10,7 +10,7 @@
 - **Production Ready Architecture**: Strictly typed with TypeScript, Zustand for global state, and an Axios API layer ready to plug into a backend.
 
 ## Tech Stack
-- **Framework**: React Native (Expo SDK 52)
+- **Framework**: React Native (Expo SDK 57)
 - **Routing**: Expo Router (File-based)
 - **State Management**: Zustand
 - **Data Fetching**: TanStack Query (React Query)

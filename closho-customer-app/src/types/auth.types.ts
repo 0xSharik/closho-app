@@ -1,9 +1,12 @@
 export interface User {
   id: string;
   name: string;
+  fullName?: string;
   email: string;
   phone?: string;
+  phone_no?: string;
   avatar?: string;
+  role?: any;
 }
 
 export interface Session {

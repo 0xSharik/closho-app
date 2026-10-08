@@ -116,7 +116,7 @@ export const Button = ({
       >
         {isLoading ? (
           <ActivityIndicator 
-            color={variant === 'primary' ? colors.text.inverse : colors.text.primary} 
+            color={colors.text.primary}
           />
         ) : (
           <>
@@ -180,7 +180,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   primaryText: {
-    color: colors.text.inverse,
+    color: colors.text.primary,
   },
   secondaryText: {
     color: colors.text.primary,

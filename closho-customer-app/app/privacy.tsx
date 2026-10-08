@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { colors } from '../src/theme/colors';
-import { typography } from '../src/theme/typography';
 import { spacing } from '../src/theme/spacing';
+import { typography } from '../src/theme/typography';
+import { goBackOrHome } from '../src/utils/navigation';
 
 export default function PrivacyPolicyScreen() {
   const router = useRouter();
@@ -36,7 +37,7 @@ export default function PrivacyPolicyScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => goBackOrHome(router)}>
           <Ionicons name="arrow-back" size={24} color={colors.text.primary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Privacy Policy</Text>

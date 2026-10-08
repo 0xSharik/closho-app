@@ -1,12 +1,14 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../../src/theme/colors';
-import { typography } from '../../src/theme/typography';
-import { spacing } from '../../src/theme/spacing';
-import { useAuthStore } from '../../src/store/authStore';
 import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
+import React from 'react';
+import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useAuthStore } from '../../src/store/authStore';
+import { colors } from '../../src/theme/colors';
+import { spacing } from '../../src/theme/spacing';
+import { typography } from '../../src/theme/typography';
+import { getAvatarUrl } from '../../src/utils/avatar';
 
 export default function ProfileScreen() {
   const { user, logout, fetchProfile } = useAuthStore();
@@ -33,7 +35,6 @@ export default function ProfileScreen() {
     { icon: 'location-outline', title: 'My Addresses', href: '/addresses' },
     { icon: 'heart-outline', title: 'Wishlist', href: '/wishlist' },
     { icon: 'notifications-outline', title: 'Notifications', href: '/notifications' },
-    { icon: 'hardware-chip-outline', title: 'Active Sessions', href: '/sessions' },
     { icon: 'document-text-outline', title: 'Terms & Conditions', href: '/terms' },
     { icon: 'shield-checkmark-outline', title: 'Privacy Policy', href: '/privacy' },
     { icon: 'help-buoy-outline', title: 'Help & Support', href: '/help' },
@@ -41,27 +42,32 @@ export default function ProfileScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-      
+
       {/* Profile Header */}
       <View style={styles.header}>
         <View style={styles.avatarContainer}>
           {user?.avatar ? (
-            <Image source={{ uri: user.avatar }} style={styles.avatar} />
+            <Image
+              source={{ uri: getAvatarUrl(user.avatar) }}
+              style={styles.avatar}
+              contentFit="cover"
+              transition={200}
+            />
           ) : (
             <View style={styles.avatarFallback}>
-              <Text style={styles.avatarInitial}>{(user?.name || (user as any)?.fullName || user?.phone || 'U').charAt(0).toUpperCase()}</Text>
+              <Text style={styles.avatarInitial}>{(user?.fullName || user?.name || user?.phone || 'U').charAt(0).toUpperCase()}</Text>
             </View>
           )}
         </View>
-        <Text style={styles.name}>{user?.name || (user as any)?.fullName || user?.phone || 'Guest User'}</Text>
-        <Text style={styles.email}>{user?.email || user?.phone || (user as any)?.phone_no || ''}</Text>
+        <Text style={styles.name}>{user?.fullName || user?.name || user?.phone || 'Guest User'}</Text>
+        <Text style={styles.email}>{user?.email || user?.phone_no || user?.phone || ''}</Text>
       </View>
 
       {/* Menu Options */}
       <View style={styles.menuContainer}>
         {menuItems.map((item, index) => (
-          <TouchableOpacity 
-            key={index} 
+          <TouchableOpacity
+            key={index}
             style={[styles.menuItem, index === menuItems.length - 1 && styles.menuItemLast]}
             activeOpacity={0.7}
             onPress={() => handleMenuPress(item.href)}

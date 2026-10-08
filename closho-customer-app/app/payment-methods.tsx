@@ -1,13 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Modal, TextInput, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { colors } from '../src/theme/colors';
-import { typography } from '../src/theme/typography';
-import { spacing } from '../src/theme/spacing';
 import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Button } from '../src/components/ui/Button';
 import { useProfileStore } from '../src/store/profileStore';
+import { colors } from '../src/theme/colors';
+import { spacing } from '../src/theme/spacing';
+import { typography } from '../src/theme/typography';
+import { goBackOrHome } from '../src/utils/navigation';
 
 export default function PaymentMethodsScreen() {
   const router = useRouter();
@@ -23,7 +24,7 @@ export default function PaymentMethodsScreen() {
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.back();
+    goBackOrHome(router);
   };
 
   const handleAddCard = async () => {
@@ -31,23 +32,23 @@ export default function PaymentMethodsScreen() {
       Alert.alert('Error', 'Please enter a valid card number');
       return;
     }
-    
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setIsSubmitting(true);
-    
+
     const last4 = cardNumber.slice(-4);
     // Simple logic to guess brand from first digit
     const brand = cardNumber.startsWith('4') ? 'Visa' : (cardNumber.startsWith('5') ? 'Mastercard' : 'Card');
-    
+
     const res = await addPaymentMethod({
       brand,
       last4,
       exp: expiry || '12/30',
       isDefault: paymentMethods.length === 0
     });
-    
+
     setIsSubmitting(false);
-    
+
     if (res.success) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setModalVisible(false);
@@ -82,7 +83,7 @@ export default function PaymentMethodsScreen() {
         <View style={{ width: 24 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
         {isLoading && paymentMethods.length === 0 ? (
           <View style={styles.emptyState}>
             <ActivityIndicator size="large" color={colors.primary} />
@@ -127,9 +128,9 @@ export default function PaymentMethodsScreen() {
       </ScrollView>
 
       <View style={styles.footer}>
-        <Button 
-          title="Add New Payment Method" 
-          onPress={() => { Haptics.impactAsync(); setModalVisible(true); }} 
+        <Button
+          title="Add New Payment Method"
+          onPress={() => { Haptics.impactAsync(); setModalVisible(true); }}
         />
       </View>
 
@@ -144,7 +145,7 @@ export default function PaymentMethodsScreen() {
             </View>
             <View style={styles.modalBody}>
               <Text style={styles.inputLabel}>Card Number</Text>
-              <TextInput 
+              <TextInput
                 style={styles.textInput}
                 placeholder="0000 0000 0000 0000"
                 placeholderTextColor={colors.text.tertiary}
@@ -153,9 +154,9 @@ export default function PaymentMethodsScreen() {
                 keyboardType="number-pad"
                 maxLength={19}
               />
-              
+
               <Text style={styles.inputLabel}>Expiry Date</Text>
-              <TextInput 
+              <TextInput
                 style={styles.textInput}
                 placeholder="MM/YY"
                 placeholderTextColor={colors.text.tertiary}
@@ -164,12 +165,12 @@ export default function PaymentMethodsScreen() {
                 keyboardType="number-pad"
                 maxLength={5}
               />
-              
-              <Button 
-                title={isSubmitting ? "Saving..." : "Save Card"} 
+
+              <Button
+                title={isSubmitting ? "Saving..." : "Save Card"}
                 disabled={isSubmitting}
-                onPress={handleAddCard} 
-                style={{ marginTop: spacing.xl, marginBottom: spacing.xl }} 
+                onPress={handleAddCard}
+                style={{ marginTop: spacing.xl, marginBottom: spacing.xl }}
               />
             </View>
           </View>

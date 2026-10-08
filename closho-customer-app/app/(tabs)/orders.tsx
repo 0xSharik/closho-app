@@ -55,7 +55,23 @@ export default function OrdersScreen() {
     }
   };
 
-  const filteredOrders = orders.filter(o => statusMatches(o.status, activeTab));
+  const visibleOrders = orders.filter(order => {
+    const paymentMethod = String((order as any).paymentMethod || '').toLowerCase();
+    const paymentStatus = String((order as any).paymentStatus || '').toLowerCase();
+    const online =
+      paymentMethod === 'razorpay' ||
+      paymentMethod === 'card' ||
+      paymentMethod === 'upi';
+
+    if (!online) return true;
+
+    return ['paid', 'captured', 'success', 'successful', 'completed']
+      .includes(paymentStatus);
+  });
+
+  const filteredOrders = visibleOrders.filter(o =>
+    statusMatches(o.status, activeTab)
+  );
 
   return (
     <View style={styles.container}>

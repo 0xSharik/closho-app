@@ -1,12 +1,13 @@
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { colors } from '../src/theme/colors';
-import { typography } from '../src/theme/typography';
-import { spacing } from '../src/theme/spacing';
 import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
+import { useEffect } from 'react';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useNotificationStore } from '../src/store/notificationStore';
+import { colors } from '../src/theme/colors';
+import { spacing } from '../src/theme/spacing';
+import { typography } from '../src/theme/typography';
+import { goBackOrHome } from '../src/utils/navigation';
 
 export default function NotificationsScreen() {
   const router = useRouter();
@@ -18,7 +19,7 @@ export default function NotificationsScreen() {
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.back();
+    goBackOrHome(router);
   };
 
   const handlePress = (id: string, isRead: boolean) => {
@@ -29,7 +30,7 @@ export default function NotificationsScreen() {
   };
 
   const getIcon = (type: string) => {
-    switch(type) {
+    switch (type) {
       case 'order': return 'cube-outline';
       case 'promo': return 'pricetag-outline';
       default: return 'notifications-outline';
@@ -58,8 +59,8 @@ export default function NotificationsScreen() {
           </View>
         ) : (
           notifications.map((notif) => (
-            <TouchableOpacity 
-              key={notif.id} 
+            <TouchableOpacity
+              key={notif.id}
               style={[styles.notificationCard, !notif.isRead && styles.unreadCard]}
               onPress={() => handlePress(notif.id, notif.isRead)}
             >

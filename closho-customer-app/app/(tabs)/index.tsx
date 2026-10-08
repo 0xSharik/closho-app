@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { Image as ExpoImage } from 'expo-image';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Image, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -8,22 +9,23 @@ import { Product, ProductCard } from '../../src/components/product/ProductCard';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
+import { getAvatarUrl } from '../../src/utils/avatar';
 
 import * as Location from 'expo-location';
 import { ProductGridSkeleton } from '../../src/components/ui/SkeletonLoader';
+import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import api from '../../src/services/api';
 import { useAuthStore } from '../../src/store/authStore';
 import { useProfileStore } from '../../src/store/profileStore';
 import { useReelsStore } from '../../src/store/reelsStore';
 import { useStoreStore } from '../../src/store/storeStore';
-import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { currentStore, availableStores, fetchAllStores, fetchNearestStore, setCurrentStore } = useStoreStore();
   const { reels, fetchReels } = useReelsStore();
-  const { addresses, fetchAddresses } = useProfileStore();
+  const { addresses, fetchAddresses, setDefaultAddress } = useProfileStore();
   const { user } = useAuthStore();
   const { showSnackbar } = useSnackbar();
   const [products, setProducts] = useState<Product[]>([]);
@@ -66,13 +68,20 @@ export default function HomeScreen() {
           return;
         }
 
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
+        const lastKnown = await Location.getLastKnownPositionAsync({
+          maxAge: 60_000,
+          requiredAccuracy: 100,
         });
+        if (lastKnown) {
+          void resolveLocationLabel(lastKnown.coords.latitude, lastKnown.coords.longitude);
+          void fetchNearestStore(lastKnown.coords.latitude, lastKnown.coords.longitude, 15);
+        }
 
-        // Reverse geocode to get a human-readable label for the header
-        resolveLocationLabel(location.coords.latitude, location.coords.longitude);
-
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+          mayShowUserSettingsDialog: true,
+        });
+        void resolveLocationLabel(location.coords.latitude, location.coords.longitude);
         await fetchNearestStore(location.coords.latitude, location.coords.longitude, 15);
       } catch (error) {
         console.warn('Error getting location', error);
@@ -122,7 +131,8 @@ export default function HomeScreen() {
         await Location.enableNetworkProviderAsync().catch(() => undefined);
       }
       const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
+        accuracy: Location.Accuracy.High,
+        mayShowUserSettingsDialog: true,
       });
       await resolveLocationLabel(location.coords.latitude, location.coords.longitude);
       showSnackbar('Location updated.', 'success');
@@ -151,7 +161,8 @@ export default function HomeScreen() {
       }
 
       const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
+        accuracy: Location.Accuracy.High,
+        mayShowUserSettingsDialog: true,
       });
       // Also update header label when re-selecting location from store modal
       resolveLocationLabel(location.coords.latitude, location.coords.longitude);
@@ -164,6 +175,16 @@ export default function HomeScreen() {
     } finally {
       setIsLocating(false);
     }
+  };
+
+  const selectDeliveryAddress = async (addressId: string) => {
+    const result = await setDefaultAddress(addressId);
+    if (!result.success) {
+      showSnackbar('Could not select that delivery address. Please try again.', 'error');
+      return;
+    }
+    setIsAddressModalVisible(false);
+    showSnackbar('Delivery address selected.', 'success');
   };
 
   // Fetch products + addresses when store changes (guarded to prevent double-fire on startup)
@@ -251,7 +272,7 @@ export default function HomeScreen() {
             <TouchableOpacity style={styles.iconBtn} activeOpacity={0.7} onPress={() => router.push('/(tabs)/profile')}>
               <View style={styles.profileImageWrapper}>
                 {user?.avatar ? (
-                  <Image source={{ uri: user.avatar }} style={styles.profileImage} />
+                  <ExpoImage source={{ uri: getAvatarUrl(user.avatar) }} style={styles.profileImage} contentFit="cover" transition={200} />
                 ) : (
                   <View style={[styles.profileImage, { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center' }]}>
                     <Text style={{ color: colors.text.inverse, fontWeight: 'bold', fontSize: 14 }}>
@@ -334,7 +355,7 @@ export default function HomeScreen() {
                     <Ionicons
                       name="storefront-outline"
                       size={20}
-                      color={isActive ? colors.background : colors.text.primary}
+                      color={colors.text.primary}
                     />
                   </View>
                   <Text style={[styles.storeCardTitle, isActive && styles.storeCardTitleActive]} numberOfLines={1}>
@@ -463,15 +484,19 @@ export default function HomeScreen() {
               {addresses.length === 0 ? (
                 <Text style={{ color: colors.text.secondary, marginBottom: spacing.lg, textAlign: 'center' }}>No saved addresses yet.</Text>
               ) : (
-                addresses.map(address => (
-                  <TouchableOpacity key={address.id} style={styles.addressItem} onPress={() => setIsAddressModalVisible(false)}>
-                    <Ionicons name={address.type === 'home' ? 'home' : address.type === 'office' ? 'briefcase' : 'location'} size={20} color={colors.text.tertiary} style={{ marginRight: spacing.md }} />
-                    <View>
-                      <Text style={styles.addressTitle}>{address.type.charAt(0).toUpperCase() + address.type.slice(1)}</Text>
-                      <Text style={styles.addressDesc}>{address.addressLine1}</Text>
-                    </View>
-                  </TouchableOpacity>
-                ))
+                addresses.map(address => {
+                  const isSelected = address.isDefault;
+                  return (
+                    <TouchableOpacity key={address.id} style={[styles.addressItem, isSelected && styles.addressItemSelected]} onPress={() => selectDeliveryAddress(address.id)}>
+                      <Ionicons name={address.type === 'home' ? 'home' : address.type === 'office' ? 'briefcase' : 'location'} size={20} color={isSelected ? colors.primary : colors.text.tertiary} style={{ marginRight: spacing.md }} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.addressTitle}>{address.type.charAt(0).toUpperCase() + address.type.slice(1)}</Text>
+                        <Text style={styles.addressDesc}>{address.addressLine1}</Text>
+                      </View>
+                      {isSelected && <Ionicons name="checkmark-circle" size={22} color={colors.primary} />}
+                    </TouchableOpacity>
+                  )
+                })
               )}
               <TouchableOpacity style={styles.addAddressBtn} onPress={() => { setIsAddressModalVisible(false); router.push('/addresses'); }}>
                 <Ionicons name="add" size={20} color={colors.primary} />
@@ -694,8 +719,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   storeCardBoxActive: {
-    backgroundColor: colors.surface,
-    borderColor: colors.text.primary,
+    backgroundColor: colors.primaryDark,
+    borderColor: colors.primaryLight,
   },
   storeCardImageContainer: {
     marginRight: spacing.xs,
@@ -787,6 +812,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceLight,
     borderRadius: 12,
     marginBottom: spacing.md,
+  },
+  addressItemSelected: {
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.primary + '14',
   },
   addressTitle: {
     color: colors.text.primary,

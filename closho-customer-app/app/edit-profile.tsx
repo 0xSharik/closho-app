@@ -1,119 +1,275 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { colors } from '../src/theme/colors';
-import { typography } from '../src/theme/typography';
-import { spacing } from '../src/theme/spacing';
+import axios from 'axios';
 import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { Button } from '../src/components/ui/Button';
 import { Input } from '../src/components/ui/Input';
-import { useAuthStore } from '../src/store/authStore';
 import { useSnackbar } from '../src/components/ui/SnackbarContext';
-import * as ImagePicker from 'expo-image-picker';
+import { useAuthStore } from '../src/store/authStore';
+import { colors } from '../src/theme/colors';
+import { spacing } from '../src/theme/spacing';
+import { typography } from '../src/theme/typography';
+import { getAvatarUrl } from '../src/utils/avatar';
+import { goBackOrHome } from '../src/utils/navigation';
 
 export default function EditProfileScreen() {
   const router = useRouter();
-  const { user, updateUser } = useAuthStore();
+  const { user, updateUser, isLoading } = useAuthStore();
   const { showSnackbar } = useSnackbar();
 
-  const [name, setName] = useState(user?.name || (user as any)?.fullName || '');
+  const [name, setName] = useState(user?.fullName || user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
-  const [phone, setPhone] = useState(user?.phone || (user as any)?.phone_no || '');
+  const [phone, setPhone] = useState(user?.phone_no || user?.phone || '');
   const [avatar, setAvatar] = useState(user?.avatar || '');
 
-  const pickImage = async () => {
-    Haptics.impactAsync();
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.5,
-    });
+  useEffect(() => {
+    if (!user) return;
 
-    if (!result.canceled && result.assets && result.assets.length > 0) {
-      setAvatar(result.assets[0].uri);
+    setName(user.fullName || user.name || '');
+    setEmail(user.email || '');
+    setPhone(user.phone_no || user.phone || '');
+    setAvatar(user.avatar || '');
+  }, [user]);
+
+  const pickImage = async () => {
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      const permission =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+      if (!permission.granted) {
+        showSnackbar(
+          'Photo library permission is required to select a profile picture.',
+          'error'
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (
+        !result.canceled &&
+        result.assets &&
+        result.assets.length > 0
+      ) {
+        const selectedUri = result.assets[0].uri;
+
+        console.log('[PROFILE UI] Selected avatar:', selectedUri);
+        setAvatar(selectedUri);
+      }
+    } catch (error) {
+      console.error('[PROFILE UI] Image picker error:', error);
+      showSnackbar('Unable to select the image.', 'error');
     }
   };
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.back();
+    goBackOrHome(router);
   };
 
   const handleSave = async () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    const res = await updateUser({ name, email, phone, avatar });
-    if (res && !res.success) {
-      showSnackbar(res.message || 'Failed to update profile', 'error');
-    } else {
-      showSnackbar('Profile updated successfully', 'success');
-      router.back();
+    if (isLoading) return;
+
+    try {
+      await Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Success
+      );
+
+      console.log('[PROFILE UI] Saving profile:', {
+        hasName: !!name.trim(),
+        hasEmail: !!email.trim(),
+        hasPhone: !!phone.trim(),
+        avatar,
+        isLocalAvatar:
+          avatar.startsWith('file://') ||
+          avatar.startsWith('content://'),
+      });
+
+      const res = await updateUser({
+        fullName: name.trim(),
+        email: email.trim(),
+        phone_no: phone.trim(),
+        avatar,
+      });
+
+      if (!res?.success) {
+        showSnackbar(
+          res?.message || 'Failed to update profile',
+          'error'
+        );
+        return;
+      }
+
+      showSnackbar(
+        'Profile updated successfully',
+        'success'
+      );
+
+      // updateUser already stores the server response in Zustand.
+      // The avatar state is therefore replaced by the server URL, not file://.
+      goBackOrHome(router);
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        console.error('[PROFILE] Save failed:', {
+          message: error.message,
+          code: error.code,
+          status: error.response?.status,
+          response: error.response?.data,
+          url: error.config?.url,
+          baseURL: error.config?.baseURL,
+          method: error.config?.method,
+        });
+      } else {
+        console.error('[PROFILE] Save failed:', error);
+      }
+
+      showSnackbar(
+        'Failed to update profile',
+        'error'
+      );
     }
   };
+
+  const displayAvatar = avatar
+    ? getAvatarUrl(avatar)
+    : '';
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
-          <Ionicons name="arrow-back" size={24} color={colors.text.primary} />
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={handleBack}
+          disabled={isLoading}
+        >
+          <Ionicons
+            name="arrow-back"
+            size={24}
+            color={colors.text.primary}
+          />
         </TouchableOpacity>
+
         <Text style={styles.headerTitle}>Edit Profile</Text>
+
         <View style={{ width: 24 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <View style={styles.avatarSection}>
-          <TouchableOpacity style={styles.avatarContainer} onPress={pickImage} activeOpacity={0.8}>
-            {avatar ? (
-              <Image source={{ uri: avatar }} style={styles.avatar} />
-            ) : (
-              <View style={styles.avatarFallback}>
-                <Text style={styles.avatarInitial}>{name.charAt(0) || 'U'}</Text>
+      <KeyboardAvoidingView
+        style={styles.keyboardContainer}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        >
+          <View style={styles.avatarSection}>
+            <TouchableOpacity
+              style={styles.avatarContainer}
+              onPress={pickImage}
+              activeOpacity={0.8}
+              disabled={isLoading}
+            >
+              {displayAvatar ? (
+                <Image
+                  source={{ uri: displayAvatar }}
+                  style={styles.avatar}
+                  contentFit="cover"
+                  transition={200}
+                  cachePolicy="disk"
+                  onError={(event) => {
+                    console.warn(
+                      '[PROFILE UI] Avatar image failed:',
+                      event.error,
+                      displayAvatar
+                    );
+                  }}
+                />
+              ) : (
+                <View style={styles.avatarFallback}>
+                  <Text style={styles.avatarInitial}>
+                    {(name.trim().charAt(0) || 'U').toUpperCase()}
+                  </Text>
+                </View>
+              )}
+
+              <View style={styles.editBadge}>
+                <Ionicons
+                  name="camera"
+                  size={16}
+                  color={colors.text.inverse}
+                />
               </View>
-            )}
-            <View style={styles.editBadge}>
-              <Ionicons name="camera" size={16} color={colors.text.inverse} />
-            </View>
-          </TouchableOpacity>
-        </View>
+            </TouchableOpacity>
 
-        <View style={styles.formSection}>
-          <Input
-            label="Full Name"
-            placeholder="Enter your name"
-            value={name}
-            onChangeText={setName}
-            autoCapitalize="words"
-          />
-          
-          <View style={{ height: spacing.lg }} />
-          
-          <Input
-            label="Email Address"
-            placeholder="Enter your email"
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-          />
+            <Text style={styles.changePhotoText}>
+              Tap to change photo
+            </Text>
+          </View>
 
-          <View style={{ height: spacing.lg }} />
-          
-          <Input
-            label="Phone Number"
-            placeholder="Enter your phone"
-            value={phone}
-            onChangeText={setPhone}
-            keyboardType="phone-pad"
-          />
-        </View>
-      </ScrollView>
+          <View style={styles.formSection}>
+            <Input
+              label="Full Name"
+              placeholder="Enter your name"
+              value={name}
+              onChangeText={setName}
+              autoCapitalize="words"
+              editable={!isLoading}
+            />
+
+            <View style={{ height: spacing.lg }} />
+
+            <Input
+              label="Email Address"
+              placeholder="Enter your email"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              editable={!isLoading}
+            />
+
+            <View style={{ height: spacing.lg }} />
+
+            <Input
+              label="Phone Number"
+              placeholder="Enter your phone"
+              value={phone}
+              onChangeText={setPhone}
+              keyboardType="phone-pad"
+              editable={!isLoading}
+            />
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
 
       <View style={styles.footer}>
-        <Button 
-          title="Save Changes" 
-          onPress={handleSave} 
+        <Button
+          title={isLoading ? 'Saving...' : 'Save Changes'}
+          onPress={handleSave}
+          disabled={isLoading}
         />
       </View>
     </View>
@@ -124,6 +280,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  keyboardContainer: {
+    flex: 1,
+  },
+  scrollView: {
+    flex: 1,
   },
   header: {
     flexDirection: 'row',
@@ -145,7 +307,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: spacing.lg,
-    paddingBottom: spacing.xxxl * 4,
+    paddingBottom: spacing.xxxl * 5,
   },
   avatarSection: {
     alignItems: 'center',
@@ -191,6 +353,11 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: colors.background,
   },
+  changePhotoText: {
+    marginTop: spacing.sm,
+    color: colors.text.secondary,
+    fontSize: typography.fontSize.sm,
+  },
   formSection: {
     marginTop: spacing.md,
   },
@@ -200,7 +367,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     padding: spacing.xl,
-    paddingBottom: Platform.OS === 'ios' ? 34 : spacing.xl,
+    paddingBottom:
+      Platform.OS === 'ios' ? 34 : spacing.xl,
     backgroundColor: colors.surface,
     borderTopWidth: 1,
     borderTopColor: colors.borderLight,

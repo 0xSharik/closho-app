@@ -8,10 +8,10 @@ import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
-import { friendlyError } from '../../src/utils/friendlyError';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
+import { friendlyError } from '../../src/utils/friendlyError';
 
 const resetSchema = z.object({
   password: z.string().min(6, 'Password must be at least 6 characters'),
@@ -79,7 +79,7 @@ export default function ResetPasswordScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
         <Animated.View style={[styles.content, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
           <View style={styles.header}>
             <Text style={styles.title}>Reset Password</Text>

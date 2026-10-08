@@ -1,7 +1,25 @@
-import { Slot, useRouter, useSegments } from 'expo-router';
+import { Stack, type ErrorBoundaryProps, useRouter, useSegments } from 'expo-router';
 import { useEffect } from 'react';
-import { useAuthStore } from '../src/store/authStore';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SnackbarProvider } from '../src/components/ui/SnackbarContext';
+import { useAuthStore } from '../src/store/authStore';
+import { AppErrorBoundary } from '../src/components/AppErrorBoundary';
+
+function ScreenErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <View style={screenErrorStyles.container}>
+      <Text style={screenErrorStyles.title}>This screen failed</Text>
+      <Text style={screenErrorStyles.message}>{error.message || 'Unexpected application error.'}</Text>
+      <Pressable onPress={retry} style={screenErrorStyles.button} accessibilityRole="button">
+        <Text style={screenErrorStyles.buttonText}>Try again</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+export const unstable_settings = {
+  screenErrorBoundary: ScreenErrorBoundary,
+};
 
 const PUBLIC_AUTH_ROUTES = new Set([
   'login',
@@ -36,6 +54,20 @@ export default function RootLayout() {
     currentRoute === 'splash';
 
   useEffect(() => {
+    if (Platform.OS !== 'web' || typeof window === 'undefined') {
+      return;
+    }
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      console.error('[Global] Unhandled promise rejection:', event.reason);
+      event.preventDefault();
+    };
+
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    return () => window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+  }, []);
+
+  useEffect(() => {
     console.log('[AUTH GUARD DEBUG]', {
       currentRoute,
       inAuthGroup,
@@ -60,9 +92,7 @@ export default function RootLayout() {
         console.log(
           '[AUTH GUARD DEBUG] Authenticated user leaving auth flow -> tabs.'
         );
-        router.replace(
-          '/(tabs)/reels'
-        );
+        router.replace('/(tabs)');
         return;
       }
 
@@ -105,8 +135,23 @@ export default function RootLayout() {
   ]);
 
   return (
-    <SnackbarProvider>
-      <Slot />
-    </SnackbarProvider>
+    <AppErrorBoundary>
+      <SnackbarProvider>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(auth)" />
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="product/[id]" />
+        </Stack>
+      </SnackbarProvider>
+    </AppErrorBoundary>
   );
 }
+
+
+const screenErrorStyles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  title: { color: '#fff', fontSize: 22, fontWeight: '700', marginBottom: 12 },
+  message: { color: '#bbb', textAlign: 'center', lineHeight: 21, maxWidth: 420 },
+  button: { marginTop: 20, backgroundColor: '#fff', paddingHorizontal: 22, paddingVertical: 12, borderRadius: 10 },
+  buttonText: { color: '#000', fontWeight: '700' },
+});

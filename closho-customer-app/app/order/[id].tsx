@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Platform,
   ScrollView,
@@ -14,6 +15,7 @@ import {
 } from 'react-native';
 import { Button } from '../../src/components/ui/Button';
 import api from '../../src/services/api';
+import { useOrderStore } from '../../src/store/orderStore';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
@@ -32,6 +34,8 @@ export default function OrderDetailsScreen() {
   const [order, setOrder] = useState<any>(parsedOrderData);
   const [isLoading, setIsLoading] = useState(!parsedOrderData);
   const [error, setError] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const cancelOrder = useOrderStore(state => state.cancelOrder);
 
   // Only fetch from network if we don't have orderData
   useEffect(() => {
@@ -57,11 +61,53 @@ export default function OrderDetailsScreen() {
     router.back();
   };
 
-  // Stable fallback tracking number (doesn't change on re-render)
-  const fallbackTrackingNumber = useMemo(
-    () => `TRK${Math.floor(Math.random() * 100000000)}`,
-    [order?.id],
-  );
+
+  const handleCancelOrder = () => {
+    Alert.alert(
+      'Cancel Order',
+      'Are you sure you want to cancel this order?',
+      [
+        { text: 'Keep Order', style: 'cancel' },
+        {
+          text: 'Cancel Order',
+          style: 'destructive',
+          onPress: async () => {
+            if (!id || isCancelling) return;
+
+            setIsCancelling(true);
+            try {
+              const result = await cancelOrder(String(id));
+
+              if (!result.success) {
+                Alert.alert('Unable to cancel', result.error || 'The order could not be cancelled.');
+                return;
+              }
+
+              setOrder((current: any) => ({
+                ...current,
+                status: 'cancelled',
+              }));
+
+              Alert.alert('Order Cancelled', 'Your order has been cancelled.', [
+                { text: 'OK', onPress: () => router.back() },
+              ]);
+            } catch (err: any) {
+              Alert.alert(
+                'Unable to cancel',
+                err?.message || 'The order could not be cancelled.',
+              );
+            } finally {
+              setIsCancelling(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // Never invent a tracking number. A tracking number is a server-side
+  // shipment identifier and must only be shown when the backend provides it.
+  const fallbackTrackingNumber = 'Not assigned yet';
 
   if (isLoading && !order) {
     return (
@@ -83,6 +129,9 @@ export default function OrderDetailsScreen() {
   if (!order) return null;
 
   const displayOrder = order;
+  const canCancelOrder = ['pending', 'confirmed', 'processing'].includes(
+    String(displayOrder?.status || '').toLowerCase(),
+  );
   const orderTitle = displayOrder.items?.length > 0
     ? displayOrder.items.length === 1
       ? displayOrder.items[0].name
@@ -210,13 +259,28 @@ export default function OrderDetailsScreen() {
           <View style={styles.priceRow}>
             <Text style={styles.priceLabel}>Items Total</Text>
             <Text style={styles.priceValue}>
-              ₹{(displayOrder.items || []).reduce((s: number, i: any) => s + Number(i.price || 0) * (i.quantity || 1), 0).toFixed(2)}
+              ₹{Number(
+                displayOrder.subtotal ??
+                (displayOrder.items || []).reduce((s: number, i: any) => s + Number(i.price || 0) * (i.quantity || 1), 0)
+              ).toFixed(2)}
             </Text>
           </View>
-          <View style={styles.priceRow}>
-            <Text style={styles.priceLabel}>Shipping</Text>
-            <Text style={styles.priceValue}>₹99.00</Text>
-          </View>
+          {displayOrder.discountAmount != null && Number(displayOrder.discountAmount) > 0 && (
+            <View style={styles.priceRow}>
+              <Text style={styles.priceLabel}>Discount</Text>
+              <Text style={[styles.priceValue, { color: colors.status.success }]}>
+                -₹{Number(displayOrder.discountAmount).toFixed(2)}
+              </Text>
+            </View>
+          )}
+          {displayOrder.shippingAmount != null && (
+            <View style={styles.priceRow}>
+              <Text style={styles.priceLabel}>Shipping</Text>
+              <Text style={styles.priceValue}>
+                ₹{Number(displayOrder.shippingAmount).toFixed(2)}
+              </Text>
+            </View>
+          )}
           <View style={[styles.priceRow, { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.borderLight }]}>
             <Text style={[styles.priceLabel, { fontWeight: 'bold', color: colors.text.primary }]}>Total</Text>
             <Text style={[styles.priceValue, { fontWeight: '900', color: colors.primary, fontSize: typography.fontSize.lg }]}>
@@ -228,6 +292,14 @@ export default function OrderDetailsScreen() {
 
       {/* Footer */}
       <View style={styles.footer}>
+        {canCancelOrder && (
+          <Button
+            title={isCancelling ? 'Cancelling...' : 'Cancel Order'}
+            disabled={isCancelling}
+            onPress={handleCancelOrder}
+            style={{ marginBottom: spacing.sm }}
+          />
+        )}
         <Button title="Download Invoice" onPress={() => Haptics.impactAsync()} />
       </View>
     </View>

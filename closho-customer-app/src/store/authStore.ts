@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import { env } from '../config/env';
 import { AuthState, User } from '../types/auth.types';
 
 interface AuthStore extends AuthState {
@@ -13,7 +14,7 @@ interface AuthStore extends AuthState {
   login: (emailOrPhone: string, password: string) => Promise<{ success: boolean; error?: string }>;
   googleLogin: (idToken: string) => Promise<{ success: boolean; error?: string }>;
   sendOtp: (phone: string) => Promise<{ success: boolean; error?: string; errorCode?: string }>;
-  verifyOtp: (phone: string, otp: string) => Promise<{ success: boolean; error?: string; resetToken?: string; directReset?: boolean }>;
+  verifyOtp: (phone: string, otp: string) => Promise<{ success: boolean; error?: string }>;
   verifyRegistrationOtp: (email: string, otp: string) => Promise<{ success: boolean; error?: string }>;
   resendRegistrationOtp: () => Promise<{ success: boolean; error?: string }>;
   register: (fullName: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
@@ -150,195 +151,109 @@ export const useAuthStore = create<AuthStore>()(
       },
 
       sendOtp: async (phone: string) => {
-        set({ isLoading: true, error: null });
+        set({
+          isLoading: true,
+          error: null,
+        });
 
         try {
           const api = require('../services/api').default;
-          let normalizedPhone = phone.replace(/\s+/g, '');
 
-          if (/^\d{10}$/.test(normalizedPhone)) normalizedPhone = `+91${normalizedPhone}`;
-          else if (/^\d{12}$/.test(normalizedPhone)) normalizedPhone = `+${normalizedPhone}`;
+          // Keep only digits
+          const normalizedPhone = phone.replace(/\D/g, '');
 
-          set({
-            pendingPhone: normalizedPhone,
-            pendingEmail: null,
-            pendingOtp: null,
-          });
-
-          console.log('[AUTH DEBUG] ===== SEND OTP START =====');
-          console.log('[AUTH DEBUG] normalizedPhone:', normalizedPhone);
-
-          /*
-           * Normal phone OTP login / verification.
-           * If the backend says the phone is already verified (409),
-           * do NOT treat that as a fatal error. An already-verified
-           * account must go through the existing password-reset flow.
-           */
-          try {
-            const response = await api.post('/auth/send-verification-otp', {
-              phone: normalizedPhone,
-            });
-
-            console.log('[AUTH DEBUG] SEND VERIFICATION OTP status:', response.status);
-
-            if (response.data?.success) {
-              set({
-                isLoading: false,
-                otpFlowUsed: 'phone_verification',
-                pendingPhone: normalizedPhone,
-              });
-
-              return { success: true };
-            }
-          } catch (sendErr: any) {
-            const status = sendErr.response?.status;
-            const errorCode = sendErr.response?.data?.errorCode;
-            const errorMsg =
-              sendErr.response?.data?.message ||
-              sendErr.message ||
-              'Failed to send OTP. Please try again.';
-
-            console.log('[AUTH DEBUG] SEND PHONE OTP ERROR:', {
-              status,
-              errorCode,
-              message: errorMsg,
-            });
-
-            // Unknown/unregistered phone: preserve the existing registration flow.
-            if (status === 404 || errorCode === 'USER_NOT_FOUND') {
-              set({
-                isLoading: false,
-                error: errorMsg,
-                pendingPhone: normalizedPhone,
-                otpFlowUsed: null,
-              });
-
-              return {
-                success: false,
-                error: errorMsg,
-                errorCode: 'USER_NOT_FOUND',
-              };
-            }
-
-            // Already verified is NOT an error for this OTP-login flow.
-            // Continue into the existing password-reset flow below.
-            if (status !== 409) {
-              set({ isLoading: false, error: errorMsg });
-
-              return {
-                success: false,
-                error: errorMsg,
-                errorCode,
-              };
-            }
-
-            console.log(
-              '[AUTH DEBUG] Phone is already verified -> continuing with password-reset OTP flow.'
-            );
-          }
-
-          /*
-           * Existing verified phone:
-           * use the existing forgot-password endpoint to issue the OTP.
-           *
-           * The backend implementation currently used by the app accepts
-           * the phone here. If it returns the associated email, retain it
-           * because /auth/verify-otp uses email for password_reset.
-           */
-          try {
-            const response = await api.post('/auth/forgot-password', {
-              phone: normalizedPhone,
-            });
-
-            console.log(
-              '[AUTH DEBUG] /auth/forgot-password status:',
-              response.status
-            );
-            console.log(
-              '[AUTH DEBUG] /auth/forgot-password response:',
-              JSON.stringify(response.data)
-            );
-
-            if (response.data?.success) {
-              const responseData =
-                response.data?.data?.data ||
-                response.data?.data ||
-                {};
-
-              const email =
-                responseData.email ||
-                responseData.user?.email ||
-                responseData.account?.email ||
-                null;
-
-              set({
-                isLoading: false,
-                otpFlowUsed: 'password_reset',
-                pendingPhone: normalizedPhone,
-                pendingEmail: email,
-                pendingOtp: null,
-                error: null,
-              });
-
-              console.log(
-                '[AUTH DEBUG] VERIFIED PHONE -> PASSWORD RESET FLOW',
-                {
-                  phone: normalizedPhone,
-                  email: email || 'not returned by backend',
-                }
-              );
-
-              return { success: true };
-            }
-
-            const errorMsg =
-              response.data?.message ||
-              'Unable to send password reset OTP. Please try again.';
-
-            set({ isLoading: false, error: errorMsg });
-
-            return { success: false, error: errorMsg };
-          } catch (resetOtpErr: any) {
-            const status = resetOtpErr.response?.status;
-            const errorCode = resetOtpErr.response?.data?.errorCode;
-            const errorMsg =
-              resetOtpErr.response?.data?.message ||
-              resetOtpErr.message ||
-              'Unable to send password reset OTP. Please try again.';
-
-            console.log('[AUTH DEBUG] PASSWORD RESET OTP ERROR:', {
-              status,
-              errorCode,
-              message: errorMsg,
-            });
+          if (!/^\d{10}$/.test(normalizedPhone)) {
+            const errorMsg = 'Please enter a valid 10-digit phone number.';
 
             set({
               isLoading: false,
               error: errorMsg,
-              otpFlowUsed: null,
             });
 
             return {
               success: false,
               error: errorMsg,
-              errorCode,
+              errorCode: 'INVALID_PHONE',
             };
           }
-        } catch (error: any) {
-          const status = error.response?.status;
-          const errorCode = error.response?.data?.errorCode;
-          const errorMsg =
-            error.response?.data?.message ||
-            error.message ||
-            'Failed to send OTP. Please try again.';
 
-          console.log('[AUTH DEBUG] SEND OTP ERROR:', {
-            status,
+          console.log('[AUTH DEBUG] ===== LOGIN OTP REQUEST START =====');
+          console.log('[AUTH DEBUG] endpoint: /auth/login-otp/request');
+          console.log('[AUTH DEBUG] phone:', normalizedPhone);
+
+          const response = await api.post('/auth/login-otp/request', {
+            phone: normalizedPhone,
+          });
+
+          console.log('[AUTH DEBUG] LOGIN OTP REQUEST RESPONSE');
+          console.log('[AUTH DEBUG] status:', response.status);
+          console.log('[AUTH DEBUG] response:', JSON.stringify(response.data));
+
+          if (response.data?.success) {
+            set({
+              isLoading: false,
+              error: null,
+              pendingPhone: normalizedPhone,
+              pendingEmail: null,
+              pendingOtp: null,
+              otpFlowUsed: 'phone_verification',
+            });
+
+            console.log('[AUTH DEBUG] LOGIN OTP SENT SUCCESSFULLY');
+            console.log(
+              '[AUTH DEBUG] isNewUser:',
+              response.data?.data?.data?.isNewUser
+            );
+            console.log(
+              '[AUTH DEBUG] expiresIn:',
+              response.data?.data?.data?.expiresIn
+            );
+
+            return {
+              success: true,
+            };
+          }
+
+          const errorMsg =
+            response.data?.message ||
+            response.data?.data?.message ||
+            'Unable to send login OTP.';
+
+          set({
+            isLoading: false,
+            error: errorMsg,
+          });
+
+          return {
+            success: false,
+            error: errorMsg,
+            errorCode: response.data?.errorCode,
+          };
+
+        } catch (error: any) {
+          const responseData = error?.response?.data;
+
+          const errorMsg =
+            responseData?.message ||
+            responseData?.data?.message ||
+            error?.message ||
+            'Unable to send login OTP.';
+
+          const errorCode =
+            responseData?.errorCode ||
+            responseData?.code ||
+            'OTP_SEND_FAILED';
+
+          console.log('[AUTH DEBUG] LOGIN OTP REQUEST ERROR:', {
+            status: error?.response?.status,
             errorCode,
             message: errorMsg,
           });
 
-          set({ isLoading: false, error: errorMsg });
+          set({
+            isLoading: false,
+            error: errorMsg,
+          });
 
           return {
             success: false,
@@ -347,7 +262,6 @@ export const useAuthStore = create<AuthStore>()(
           };
         }
       },
-
       verifyOtp: async (phone: string, otp: string) => {
         set({
           isLoading: true,
@@ -356,134 +270,207 @@ export const useAuthStore = create<AuthStore>()(
           pendingPhone: phone,
         });
 
-        console.log('[AUTH DEBUG] ===== VERIFY OTP START =====');
-
         try {
           const api = require('../services/api').default;
-          const otpFlowUsed = get().otpFlowUsed;
 
-          // Existing verified phone -> forgot-password OTP.
-          // The API contract requires email for verify-otp, so use the email
-          // returned by /auth/forgot-password instead of sending phone here.
-          if (otpFlowUsed === 'password_reset') {
-            const email = get().pendingEmail;
+          const normalizedPhone = phone.replace(/\D/g, '');
 
-            if (!email) {
-              const errorMsg =
-                'The account email was not returned by the server. Please restart the OTP login flow.';
-              set({ isLoading: false, error: errorMsg });
-              return { success: false, error: errorMsg };
-            }
+          if (!/^\d{10}$/.test(normalizedPhone)) {
+            const errorMsg = 'Invalid phone number.';
 
-            const result = await get().verifyPasswordResetOtp(email, otp);
-
-            if (!result.success) {
-              set({ isLoading: false, error: result.error || 'Invalid OTP' });
-              return result;
-            }
-
-            return result;
-          }
-
-          // Registration is verified by verifyRegistrationOtp(), because the
-          // API contract requires email + purpose=registration.
-          if (otpFlowUsed === 'registration') {
-            const email = get().pendingEmail;
-
-            if (!email) {
-              const errorMsg = 'Registration email is missing. Please restart registration.';
-              set({ isLoading: false, error: errorMsg });
-              return { success: false, error: errorMsg };
-            }
-
-            return await get().verifyRegistrationOtp(email, otp);
-          }
-
-          // Preserve the existing phone-verification flow for the backend
-          // endpoint currently used by the app.
-          try {
-            const response = await api.post('/auth/verify-otp', {
-              phone,
-              otp,
-              purpose: 'phone_verification',
+            set({
+              isLoading: false,
+              error: errorMsg,
             });
 
-            console.log('[AUTH DEBUG] phone_verification status:', response.status);
+            return {
+              success: false,
+              error: errorMsg,
+            };
+          }
 
-            if (response.data?.success) {
-              const data = response.data?.data || {};
-              const accessToken = data.accessToken || data.token;
+          if (!/^\d{6}$/.test(otp)) {
+            const errorMsg = 'OTP must be exactly 6 digits.';
 
-              if (!accessToken) {
-                const errorMsg =
-                  'OTP verified but the server did not return an access token.';
-                set({ isLoading: false, error: errorMsg });
-                return { success: false, error: errorMsg };
-              }
+            set({
+              isLoading: false,
+              error: errorMsg,
+            });
 
-              const user = data.user || {
-                id: data.userId || 'usr_otp',
-                name: data.fullName || data.name || '',
-                phone,
-                role: 'customer',
-              };
+            return {
+              success: false,
+              error: errorMsg,
+            };
+          }
 
+          console.log('[AUTH DEBUG] ===== LOGIN OTP VERIFY START =====');
+          console.log('[AUTH DEBUG] endpoint: /auth/login-otp/verify');
+          console.log('[AUTH DEBUG] phone:', normalizedPhone);
+          console.log('[AUTH DEBUG] otpLength:', otp.length);
+
+          const response = await api.post('/auth/login-otp/verify', {
+            phone: normalizedPhone,
+            otp,
+          });
+
+          console.log('[AUTH DEBUG] LOGIN OTP VERIFY RESPONSE');
+          console.log('[AUTH DEBUG] status:', response.status);
+          console.log('[AUTH DEBUG] success:', response.data?.success);
+
+          if (!response.data?.success) {
+            const errorMsg =
+              response.data?.message ||
+              response.data?.data?.message ||
+              'Invalid OTP.';
+
+            set({
+              isLoading: false,
+              error: errorMsg,
+            });
+
+            return {
+              success: false,
+              error: errorMsg,
+              errorCode: response.data?.errorCode,
+            };
+          }
+
+          const data = response.data?.data || {};
+
+          const accessToken =
+            data.accessToken ||
+            data.token;
+
+          const refreshToken =
+            data.refreshToken || null;
+
+          const sessionId =
+            data.sessionId || null;
+
+          const user =
+            data.user || {
+              id: data.userId || 'usr_otp',
+              fullName: data.fullName || data.name || '',
+              name: data.fullName || data.name || '',
+              phone: normalizedPhone,
+              role: 'customer',
+            };
+
+          if (!accessToken) {
+            const errorMsg =
+              'OTP verified but no access token was returned by the server.';
+
+            set({
+              isLoading: false,
+              error: errorMsg,
+            });
+
+            return {
+              success: false,
+              error: errorMsg,
+              errorCode: 'NO_ACCESS_TOKEN',
+            };
+          }
+
+          // THIS IS THE ACTUAL LOGIN
+          set({
+            user,
+            token: accessToken,
+            refreshToken,
+            sessionId,
+            isAuthenticated: true,
+            error: null,
+            isLoading: false,
+            pendingOtp: null,
+            pendingPhone: null,
+            otpFlowUsed: null,
+          });
+
+          console.log('[AUTH DEBUG] ===== PHONE OTP LOGIN SUCCESS =====');
+          console.log('[AUTH DEBUG] accessToken exists:', !!accessToken);
+          console.log('[AUTH DEBUG] accessToken length:', accessToken.length);
+          console.log('[AUTH DEBUG] refreshToken exists:', !!refreshToken);
+          console.log('[AUTH DEBUG] user exists:', !!user);
+          console.log('[AUTH DEBUG] isAuthenticated:', true);
+
+          // Refresh complete user profile
+          try {
+            const profileRes = await api.get('/auth/me');
+
+            if (profileRes.data?.data) {
+              const u = profileRes.data.data.user || profileRes.data.data;
+              const curUser = get().user;
               set({
-                user,
-                token: accessToken,
-                refreshToken: data.refreshToken || null,
-                sessionId: data.sessionId || null,
-                isAuthenticated: true,
-                error: null,
-                isLoading: false,
-                pendingOtp: null,
+                user: {
+                  ...curUser,
+                  ...u,
+                  name: u.fullName || u.name || curUser?.name || '',
+                  fullName: u.fullName || u.name || (curUser as any)?.fullName || '',
+                  phone: u.phone_no || u.phone || curUser?.phone || '',
+                  phone_no: u.phone_no || u.phone || (curUser as any)?.phone_no || '',
+                  email: u.email || curUser?.email || '',
+                  avatar: u.avatar || curUser?.avatar || '',
+                },
               });
 
-              try {
-                const profileRes = await api.get('/auth/me');
-                if (profileRes.data?.data) {
-                  set({ user: profileRes.data.data });
-                }
-              } catch (_) {
-                // Profile fetch is optional after successful authentication.
-              }
-
-              // Sync server cart to this device after OTP login
-              require('./cartStore').useCartStore.getState().syncCartAfterLogin();
-
-              return { success: true };
+              console.log('[AUTH DEBUG] Profile refreshed after OTP login');
             }
-          } catch (phoneErr: any) {
-            const errorMsg =
-              phoneErr.response?.data?.message ||
-              phoneErr.message ||
-              'Invalid OTP';
-
-            console.log('[AUTH DEBUG] phone_verification failed:', {
-              status: phoneErr.response?.status,
-              errorCode: phoneErr.response?.data?.errorCode,
-              message: errorMsg,
-            });
-
-            set({ isLoading: false, error: errorMsg });
-            return { success: false, error: errorMsg };
+          } catch (profileError) {
+            console.log(
+              '[AUTH DEBUG] Profile refresh skipped:',
+              profileError
+            );
           }
 
-          const errorMsg = 'OTP verification failed. Please try again.';
-          set({ isLoading: false, error: errorMsg });
-          return { success: false, error: errorMsg };
-        } catch (error: any) {
-          const errorMsg =
-            error.response?.data?.message ||
-            error.message ||
-            'Verification failed';
+          // Sync cart after login
+          try {
+            require('./cartStore')
+              .useCartStore
+              .getState()
+              .syncCartAfterLogin();
+          } catch (cartError) {
+            console.log(
+              '[AUTH DEBUG] Cart sync failed:',
+              cartError
+            );
+          }
 
-          console.warn('[AUTH DEBUG] Verify OTP error:', errorMsg);
-          set({ isLoading: false, error: errorMsg });
-          return { success: false, error: errorMsg };
+          return {
+            success: true,
+          };
+
+        } catch (error: any) {
+          const responseData = error?.response?.data;
+
+          const errorMsg =
+            responseData?.message ||
+            responseData?.data?.message ||
+            error?.message ||
+            'OTP verification failed.';
+
+          const errorCode =
+            responseData?.errorCode ||
+            responseData?.code ||
+            'OTP_VERIFY_FAILED';
+
+          console.log('[AUTH DEBUG] LOGIN OTP VERIFY ERROR:', {
+            status: error?.response?.status,
+            errorCode,
+            message: errorMsg,
+          });
+
+          set({
+            isLoading: false,
+            error: errorMsg,
+          });
+
+          return {
+            success: false,
+            error: errorMsg,
+            errorCode,
+          };
         }
       },
-
       verifyRegistrationOtp: async (email: string, otp: string) => {
         set({ isLoading: true, error: null });
 
@@ -1006,78 +993,354 @@ export const useAuthStore = create<AuthStore>()(
         set({ pendingPhone: normalizedPhone });
       },
 
-      updateUser: async (userData: Partial<User>) => {
+      updateUser: async (updates: any) => {
+        set({
+          isLoading: true,
+          error: null,
+        });
+
         try {
           const api = require('../services/api').default;
-          const currentUser = get().user;
+          const token = get().token;
+          const currentUser: any = get().user;
 
-          // Build complete payload matching backend field expectations (fullName, phone_no, phone, email, avatar)
-          const payload: any = {
-            fullName: userData.name || (userData as any).fullName || currentUser?.name,
-            phone_no: userData.phone || (userData as any).phone_no || currentUser?.phone,
-            phone: userData.phone || (userData as any).phone_no || currentUser?.phone,
-            email: userData.email !== undefined ? userData.email : currentUser?.email,
-            avatar: userData.avatar !== undefined ? userData.avatar : currentUser?.avatar,
-          };
+          const fullName = updates.fullName || updates.name || '';
+          const phoneNo = updates.phone_no || updates.phone || '';
+          const email = updates.email || '';
 
-          let res;
-          let lastError: any;
-          console.log('[Profile] Bearer Token:', get().token);
-          try {
-            res = await api.put('/user/profile', payload);
-          } catch (putErr: any) {
-            lastError = putErr;
-            console.log('[Profile] PUT /user/profile failed, trying PATCH /user/profile');
-            console.log('[Profile] PUT error status:', putErr.response?.status);
-            console.log('[Profile] PUT error body:', JSON.stringify(putErr.response?.data, null, 2));
-            try {
-              res = await api.patch('/user/profile', payload);
-            } catch (patchErr: any) {
-              lastError = patchErr;
-              console.log('[Profile] PATCH /user/profile failed, trying PUT /auth/profile');
-              console.log('[Profile] PATCH error status:', patchErr.response?.status);
-              console.log('[Profile] PATCH error body:', JSON.stringify(patchErr.response?.data, null, 2));
-              try {
-                res = await api.put('/auth/profile', payload);
-              } catch (authErr: any) {
-                lastError = authErr;
-                console.log('[Profile] PUT /auth/profile also failed');
-                console.log('[Profile] /auth/profile error status:', authErr.response?.status);
-                console.log('[Profile] /auth/profile error body:', JSON.stringify(authErr.response?.data, null, 2));
+          // Backend has separate profile endpoints for admins and customers.
+          const rawRole = currentUser?.role;
+          const roleName =
+            typeof rawRole === 'string'
+              ? rawRole
+              : rawRole?.name;
+
+          const isAdmin =
+            typeof roleName === 'string' &&
+            roleName.toLowerCase() === 'admin';
+
+          const endpoint = isAdmin
+            ? '/admin/profile'
+            : '/user/profile';
+
+          const hasLocalAvatar =
+            typeof updates.avatar === 'string' &&
+            (
+              updates.avatar.startsWith('file://') ||
+              updates.avatar.startsWith('content://')
+            );
+
+          console.log('[PROFILE] updateUser start:', {
+            endpoint,
+            role: roleName,
+            isAdmin,
+            hasLocalAvatar,
+            hasToken: !!token,
+          });
+
+          let updatedUserData: any = null;
+
+          if (hasLocalAvatar) {
+            const formData = new FormData();
+
+            // Admin contract: fullName, email, avatar
+            // Customer contract: fullName, phone_no, avatar
+            if (fullName) {
+              formData.append('fullName', fullName);
+            }
+
+            if (isAdmin) {
+              if (email) {
+                formData.append('email', email);
+              }
+            } else if (phoneNo) {
+              formData.append('phone_no', phoneNo);
+            }
+
+            const uri = updates.avatar;
+            const filename =
+              uri.split('/').pop() ||
+              `profile-${Date.now()}.jpg`;
+
+            const extension =
+              filename.split('.').pop()?.toLowerCase() || 'jpg';
+
+            const mimeType =
+              extension === 'png'
+                ? 'image/png'
+                : extension === 'webp'
+                  ? 'image/webp'
+                  : extension === 'heic' || extension === 'heif'
+                    ? 'image/heic'
+                    : 'image/jpeg';
+
+            formData.append(
+              'avatar',
+              {
+                uri,
+                name: filename,
+                type: mimeType,
+              } as any
+            );
+
+            console.log('[PROFILE] multipart upload:', {
+              url: `${env.API_URL}${endpoint}`,
+              filename,
+              mimeType,
+              fields: isAdmin
+                ? ['fullName', 'email', 'avatar']
+                : ['fullName', 'phone_no', 'avatar'],
+            });
+
+            const uploadResult = await new Promise<{
+              ok: boolean;
+              status: number;
+              data: any;
+            }>((resolve, reject) => {
+              const xhr = new XMLHttpRequest();
+              const url = `${env.API_URL}${endpoint}`;
+
+              xhr.open('PUT', url);
+              xhr.timeout = 60000;
+
+              if (token) {
+                xhr.setRequestHeader(
+                  'Authorization',
+                  `Bearer ${token}`
+                );
+              }
+
+              xhr.setRequestHeader(
+                'Accept',
+                'application/json'
+              );
+
+              // IMPORTANT:
+              // Do not manually set Content-Type here.
+              // React Native must generate the multipart boundary.
+              xhr.onload = () => {
+                console.log('[PROFILE] upload response:', {
+                  status: xhr.status,
+                  response: xhr.responseText,
+                });
+
+                let data: any;
+
+                try {
+                  data = JSON.parse(xhr.responseText || '{}');
+                } catch {
+                  data = {
+                    message: xhr.responseText || 'Invalid server response',
+                  };
+                }
+
+                resolve({
+                  ok: xhr.status >= 200 && xhr.status < 300,
+                  status: xhr.status,
+                  data,
+                });
+              };
+
+              xhr.onerror = () => {
+                console.error('[PROFILE] XHR network error:', {
+                  url,
+                  status: xhr.status,
+                });
+
+                reject(
+                  new Error(
+                    `Network error while uploading profile image to ${endpoint}`
+                  )
+                );
+              };
+
+              xhr.ontimeout = () => {
+                reject(
+                  new Error(
+                    `Profile image upload timed out after 60 seconds (${endpoint})`
+                  )
+                );
+              };
+
+              xhr.onabort = () => {
+                reject(new Error('Profile image upload was aborted'));
+              };
+
+              xhr.send(formData);
+            });
+
+            if (
+              !uploadResult.ok ||
+              !uploadResult.data?.success
+            ) {
+              const message =
+                uploadResult.data?.message ||
+                `Failed to update profile (${uploadResult.status})`;
+
+              set({
+                isLoading: false,
+                error: message,
+              });
+
+              return {
+                success: false,
+                message,
+              };
+            }
+
+            // Your admin API returns data as an array:
+            // { success: true, data: [ { ...user } ] }
+            // Other API versions may return data.user or an object.
+            const responseData = uploadResult.data?.data;
+
+            updatedUserData = Array.isArray(responseData)
+              ? responseData[0]
+              : responseData?.user || responseData;
+
+            console.log('[PROFILE] parsed uploaded user:', {
+              avatar: updatedUserData?.avatar,
+              fullName: updatedUserData?.fullName,
+              email: updatedUserData?.email,
+            });
+
+          } else {
+            // Text-only update.
+            // Do not send fields that do not belong to the current role.
+            const payload: any = {
+              fullName,
+            };
+
+            if (isAdmin) {
+              if (email) {
+                payload.email = email;
+              }
+            } else {
+              if (phoneNo) {
+                payload.phone_no = phoneNo;
               }
             }
+
+            console.log('[PROFILE] text update:', {
+              endpoint,
+              payload,
+            });
+
+            const response = await api.put(
+              endpoint,
+              payload
+            );
+
+            if (!response.data?.success) {
+              const message =
+                response.data?.message ||
+                'Failed to update profile';
+
+              set({
+                isLoading: false,
+                error: message,
+              });
+
+              return {
+                success: false,
+                message,
+              };
+            }
+
+            const responseData = response.data?.data;
+
+            updatedUserData = Array.isArray(responseData)
+              ? responseData[0]
+              : responseData?.user || responseData;
           }
 
-          if (res && res.data && res.data.success) {
-            const updatedData = res.data.data?.user || res.data.data || {};
-            const normalizedUser = {
-              ...currentUser,
-              ...userData,
-              ...updatedData,
-              name: userData.name || updatedData.name || updatedData.fullName || currentUser?.name || '',
-              phone: userData.phone || updatedData.phone || updatedData.phone_no || currentUser?.phone || '',
-              email: userData.email !== undefined ? userData.email : (updatedData.email || currentUser?.email || ''),
-              avatar: userData.avatar !== undefined ? userData.avatar : (updatedData.avatar || currentUser?.avatar || ''),
-            };
-            set({ user: normalizedUser as any });
-            return { success: true };
-          }
+          const latestUser: any = get().user;
 
-          // API responded but not success
-          if (res && res.data && !res.data.success) {
-            return { success: false, message: res.data.message || 'Failed to update profile' };
-          }
+          // NEVER store file:// or content:// as the user's permanent avatar.
+          // Those are temporary device URIs. The backend URL is the canonical value.
+          const serverAvatar =
+            typeof updatedUserData?.avatar === 'string' &&
+              !updatedUserData.avatar.startsWith('file://') &&
+              !updatedUserData.avatar.startsWith('content://')
+              ? updatedUserData.avatar
+              : latestUser?.avatar || '';
 
-          // All endpoints failed — report the actual error
-          if (lastError) {
-            const errorMsg = lastError.response?.data?.message || lastError.message || 'Failed to update profile';
-            return { success: false, message: errorMsg };
-          }
+          const normalizedUser: any = {
+            ...latestUser,
+            ...updatedUserData,
 
-          return { success: false, message: 'Failed to update profile' };
+            name:
+              updatedUserData?.fullName ||
+              updatedUserData?.name ||
+              fullName ||
+              latestUser?.name ||
+              '',
+
+            fullName:
+              updatedUserData?.fullName ||
+              updatedUserData?.name ||
+              fullName ||
+              latestUser?.fullName ||
+              '',
+
+            phone:
+              updatedUserData?.phone_no ||
+              updatedUserData?.phone ||
+              phoneNo ||
+              latestUser?.phone ||
+              '',
+
+            phone_no:
+              updatedUserData?.phone_no ||
+              updatedUserData?.phone ||
+              phoneNo ||
+              latestUser?.phone_no ||
+              '',
+
+            email:
+              updatedUserData?.email ||
+              email ||
+              latestUser?.email ||
+              '',
+
+            avatar: serverAvatar,
+          };
+
+          set({
+            user: normalizedUser,
+            isLoading: false,
+            error: null,
+          });
+
+          console.log('[PROFILE] updateUser success:', {
+            endpoint,
+            avatar: normalizedUser.avatar,
+          });
+
+          return {
+            success: true,
+            user: normalizedUser,
+          };
+
         } catch (error: any) {
-          console.warn('Update profile error', error.message || error);
-          return { success: false, message: error.response?.data?.message || error.message || 'Failed to update profile' };
+          const message =
+            error?.response?.data?.message ||
+            error?.message ||
+            'Failed to update profile';
+
+          console.error(
+            '[PROFILE] updateUser error:',
+            error?.response?.data || error
+          );
+
+          set({
+            isLoading: false,
+            error: message,
+          });
+
+          return {
+            success: false,
+            message,
+          };
         }
       },
 
@@ -1087,17 +1350,24 @@ export const useAuthStore = create<AuthStore>()(
           let response;
           try {
             response = await api.get('/auth/me');
-          } catch (_) {
-            response = await api.get('/auth/profile');
+          } catch (authMeErr) {
+            try {
+              response = await api.get('/user/me');
+            } catch (_) {
+              response = await api.get('/user/profile');
+            }
           }
+
           if (response && response.data && response.data.success && response.data.data) {
-            const u = response.data.data;
+            const u = response.data.data.user || response.data.data;
             const currentUser = get().user;
             const normalizedUser = {
               ...currentUser,
               ...u,
-              name: u.name || u.fullName || currentUser?.name || '',
-              phone: u.phone || u.phone_no || currentUser?.phone || '',
+              name: u.fullName || u.name || currentUser?.name || '',
+              fullName: u.fullName || u.name || (currentUser as any)?.fullName || '',
+              phone: u.phone_no || u.phone || currentUser?.phone || '',
+              phone_no: u.phone_no || u.phone || (currentUser as any)?.phone_no || '',
               email: u.email || currentUser?.email || '',
               avatar: u.avatar || currentUser?.avatar || '',
             };

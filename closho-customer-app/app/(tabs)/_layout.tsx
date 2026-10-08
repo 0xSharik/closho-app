@@ -9,7 +9,7 @@ export default function TabsLayout() {
   const { items } = useCartStore();
   return (
     <Tabs
-      initialRouteName="reels"
+      initialRouteName="index"
       screenOptions={{
         headerShown: false,
         headerTintColor: colors.text.primary,

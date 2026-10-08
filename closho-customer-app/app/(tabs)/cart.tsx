@@ -9,13 +9,13 @@ import {
 } from 'react-native';
 import { Button } from '../../src/components/ui/Button';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
+import { getShippingFee } from '../../src/constants/commerce';
 import { useCartStore } from '../../src/store/cartStore';
-import { logUserEvent } from '../../src/utils/userEventLogger';
-import { friendlyError } from '../../src/utils/friendlyError';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
-import { getShippingFee } from '../../src/constants/commerce';
+import { friendlyError } from '../../src/utils/friendlyError';
+import { logUserEvent } from '../../src/utils/userEventLogger';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -28,6 +28,7 @@ export default function CartScreen() {
     getCartTotal, applyCoupon, discountAmount, clearCart, fetchCart,
   } = useCartStore();
   const [couponCode, setCouponCode] = useState('');
+  const [isClearingCart, setIsClearingCart] = useState(false);
   const { showSnackbar } = useSnackbar();
 
   // Always sync from server when the cart screen comes into focus.
@@ -61,25 +62,54 @@ export default function CartScreen() {
   );
 
 
-  const updateQuantity = (id: string, delta: number) => {
+  const updateQuantity = async (id: string, delta: number) => {
     logUserEvent('cart.quantity_change_requested', { itemId: id, delta });
     Haptics.selectionAsync();
-    storeUpdateQuantity(id, delta);
+
+    const result = await storeUpdateQuantity(id, delta);
+
+    if (!result.success && result.message) {
+      showSnackbar(result.message, 'error');
+    }
   };
 
-  const removeItem = (id: string) => {
+  const removeItem = async (id: string) => {
     logUserEvent('cart.remove_requested', { itemId: id });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    removeFromCart(id);
+
+    const result = await removeFromCart(id);
+
+    if (result.success) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    } else if (result.message) {
+      showSnackbar(result.message, 'error');
+    }
   };
 
-  const handleClearCart = () => {
+  const handleClearCart = async () => {
+    if (isClearingCart || items.length === 0) return;
+
+    setIsClearingCart(true);
     logUserEvent('cart.clear_requested', { itemCount: items.length });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    clearCart();
-    showSnackbar('Cart cleared', 'info');
+
+    try {
+      const result = await clearCart();
+
+      if (result.success) {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      }
+
+      showSnackbar(
+        result.success
+          ? 'Cart cleared'
+          : result.message || 'Could not clear your cart. Please try again.',
+        result.success ? 'info' : 'error'
+      );
+    } finally {
+      setIsClearingCart(false);
+    }
+
   };
 
   const handleApplyCoupon = async () => {
@@ -134,20 +164,32 @@ export default function CartScreen() {
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.container}>
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+        >
           {/* Header */}
           <View style={styles.headerRow}>
             <Text style={styles.headerTitle}>My Cart</Text>
-            <TouchableOpacity onPress={handleClearCart} style={styles.clearBtn}>
+            <TouchableOpacity
+              onPress={handleClearCart}
+              style={[styles.clearBtn, isClearingCart && styles.clearBtnDisabled]}
+              disabled={isClearingCart}
+              accessibilityRole="button"
+              accessibilityLabel={isClearingCart ? 'Clearing cart' : 'Clear all cart items'}
+            >
               <Ionicons name="trash-outline" size={20} color={colors.status.error} />
-              <Text style={styles.clearBtnText}>Clear All</Text>
+              <Text style={styles.clearBtnText}>{isClearingCart ? 'Clearing...' : 'Clear All'}</Text>
             </TouchableOpacity>
           </View>
 
           {/* Items */}
           <View style={styles.itemsList}>
             {items.map(item => (
-              <View key={item.id} style={styles.cartItem}>
+              <TouchableOpacity key={item.id} style={styles.cartItem} activeOpacity={0.85} onPress={() => router.push(`/product/${item.productId}`)}>
                 {/* Product Image — show icon if no URL */}
                 {item.image ? (
                   <Image
@@ -164,7 +206,7 @@ export default function CartScreen() {
                 <View style={styles.itemDetails}>
                   <View style={styles.itemHeader}>
                     <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
-                    <TouchableOpacity onPress={() => removeItem(item.id)} style={styles.removeBtn}>
+                    <TouchableOpacity onPress={(event) => { event.stopPropagation(); removeItem(item.id); }} style={styles.removeBtn}>
                       <Ionicons name="trash-outline" size={20} color={colors.status.error} />
                     </TouchableOpacity>
                   </View>
@@ -176,17 +218,17 @@ export default function CartScreen() {
                   <View style={styles.itemFooter}>
                     <Text style={styles.itemPrice}>₹{item.price.toFixed(2)}</Text>
                     <View style={styles.stepper}>
-                      <TouchableOpacity style={styles.stepBtn} onPress={() => updateQuantity(item.id, -1)}>
+                      <TouchableOpacity style={styles.stepBtn} onPress={(event) => { event.stopPropagation(); updateQuantity(item.id, -1); }}>
                         <Ionicons name="remove" size={16} color={colors.text.primary} />
                       </TouchableOpacity>
                       <Text style={styles.qtyText}>{item.quantity}</Text>
-                      <TouchableOpacity style={styles.stepBtn} onPress={() => updateQuantity(item.id, 1)}>
+                      <TouchableOpacity style={styles.stepBtn} onPress={(event) => { event.stopPropagation(); updateQuantity(item.id, 1); }}>
                         <Ionicons name="add" size={16} color={colors.text.primary} />
                       </TouchableOpacity>
                     </View>
                   </View>
                 </View>
-              </View>
+              </TouchableOpacity>
             ))}
           </View>
 
@@ -305,6 +347,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     padding: spacing.xs,
+  },
+  clearBtnDisabled: {
+    opacity: 0.55,
   },
   clearBtnText: {
     color: colors.status.error,

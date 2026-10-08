@@ -1,5 +1,4 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
@@ -9,21 +8,12 @@ import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
-import { friendlyError } from '../../src/utils/friendlyError';
-import { logUserActionFailure, logUserEvent, logValidationFailure } from '../../src/utils/userEventLogger';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
+import { friendlyError } from '../../src/utils/friendlyError';
+import { logUserActionFailure, logUserEvent, logValidationFailure } from '../../src/utils/userEventLogger';
 
-try {
-  if (GoogleSignin && typeof GoogleSignin.configure === 'function') {
-    GoogleSignin.configure({
-      webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-    });
-  }
-} catch (e) {
-  console.log('[GoogleSignin] Not supported in Expo Go environment');
-}
 
 const registerSchema = z.object({
   fullName: z.string().min(2, 'Full name is required'),
@@ -94,8 +84,30 @@ export default function RegisterScreen() {
   };
 
   const handleGoogleLogin = async () => {
+    let statusCodes: any;
     logUserEvent('auth.registration_submitted', { method: 'google' });
     try {
+      if (Platform.OS === 'web') {
+        showSnackbar('Google Login is not supported on Web in this build.', 'info');
+        return;
+      }
+
+      let GoogleSignin: any;
+      try {
+        const googleModule = require('@react-native-google-signin/google-signin');
+        GoogleSignin = googleModule.GoogleSignin;
+        statusCodes = googleModule.statusCodes;
+        if (typeof GoogleSignin?.configure === 'function') {
+          GoogleSignin.configure({
+            webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+          });
+        }
+      } catch (loadError: any) {
+        console.warn('[GoogleSignIn] Native module unavailable:', loadError?.message || loadError);
+        showSnackbar('Google Sign In is unavailable in this build.', 'info');
+        return;
+      }
+
       if (!GoogleSignin || typeof GoogleSignin.hasPlayServices !== 'function') {
         showSnackbar('Google Sign In requires a custom development build (not available in standard Expo Go).', 'info');
         return;
@@ -140,7 +152,7 @@ export default function RegisterScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
         <Animated.View style={[styles.header, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
           <Text style={styles.logoText}>CLOSHO</Text>
           <Text style={styles.title}>Create Account</Text>

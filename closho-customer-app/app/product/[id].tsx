@@ -11,6 +11,7 @@ import { spacing } from '../../src/theme/spacing';
 import { Button } from '../../src/components/ui/Button';
 import * as Haptics from 'expo-haptics';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
+import { goBackOrHome } from '../../src/utils/navigation';
 import { useCartStore } from '../../src/store/cartStore';
 import { useWishlistStore } from '../../src/store/wishlistStore';
 import { useStoreStore } from '../../src/store/storeStore';
@@ -175,14 +176,14 @@ export default function ProductDetailsScreen() {
 
       {/* Floating Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={24} color={colors.text.inverse} />
+        <TouchableOpacity style={styles.iconBtn} onPress={() => goBackOrHome(router)}>
+          <Ionicons name="arrow-back" size={22} color={colors.text.primary} />
         </TouchableOpacity>
         <TouchableOpacity style={styles.iconBtn} onPress={handleWishlistToggle}>
           <Ionicons
             name={isWishlisted ? 'heart' : 'heart-outline'}
             size={24}
-            color={isWishlisted ? colors.status.error : colors.text.inverse}
+            color={isWishlisted ? colors.status.error : colors.text.primary}
           />
         </TouchableOpacity>
       </View>
@@ -434,7 +435,9 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(18,18,18,0.92)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
     justifyContent: 'center',
     alignItems: 'center',
   },

@@ -8,10 +8,11 @@ import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
-import { friendlyError } from '../../src/utils/friendlyError';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
+import { friendlyError } from '../../src/utils/friendlyError';
+import { goBackOrHome } from '../../src/utils/navigation';
 
 const otpSchema = z.object({
   otp: z.string().regex(/^\d{6}$/, 'OTP must be exactly 6 digits'),
@@ -226,7 +227,7 @@ export default function OtpVerificationScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
         <Animated.View style={[styles.content, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
           <View style={styles.header}>
             <Button
@@ -235,7 +236,7 @@ export default function OtpVerificationScreen() {
               style={styles.backBtn}
               onPress={() => {
                 console.log('[OTP SCREEN DEBUG] Back button pressed');
-                router.back();
+                goBackOrHome(router);
               }}
             />
             <Text style={styles.title}>Verify Code</Text>

@@ -26,7 +26,14 @@ export interface Order {
   date: string;
   status: string;
   total: number;
+  subtotal?: number;
+  discountAmount?: number;
+  shippingAmount?: number;
   trackingNumber?: string;
+  paymentMethod?: string;
+  paymentStatus?: string;
+  razorpayOrderId?: string;
+  razorpayPaymentId?: string;
   itemsCount?: number;
   previewImage?: string;
   items: OrderItem[];
@@ -37,13 +44,43 @@ interface OrderState {
   orders: Order[];
   isLoading: boolean;
   error: string | null;
+
   fetchOrders: () => Promise<void>;
+
   createOrder: (payload: {
     storeId: string;
     addressId: string;
     paymentMethod: string;
     couponCode?: string | null;
-  }) => Promise<{ success: boolean; data?: any; error?: string }>;
+
+    // Checkout pricing
+    deliveryFee?: number;
+    subtotal?: number;
+    discountAmount?: number;
+    totalAmount?: number;
+  }) => Promise<{
+    success: boolean;
+    data?: any;
+    error?: string;
+  }>;
+
+  verifyPayment: (payload: {
+    orderId: string;
+    paymentId: string;
+    signature: string;
+  }) => Promise<{
+    success: boolean;
+    data?: any;
+    error?: string;
+  }>;
+
+  cancelOrder: (
+    orderId: string
+  ) => Promise<{
+    success: boolean;
+    data?: any;
+    error?: string;
+  }>;
 }
 
 // ─── Helper: extract image URL from order item ───────────────────────────────
@@ -112,6 +149,46 @@ async function fetchProductImage(
 
     return '';
   }
+}
+
+
+function shouldShowCustomerOrder(order: any): boolean {
+  const paymentMethod = String(order?.paymentMethod || '').toLowerCase();
+  const paymentStatus = String(order?.paymentStatus || '').toLowerCase();
+  const status = String(order?.status || '').toLowerCase();
+
+  const isOnlinePayment =
+    paymentMethod === 'razorpay' ||
+    paymentMethod === 'card' ||
+    paymentMethod === 'upi';
+
+  if (!isOnlinePayment) {
+    return true;
+  }
+
+  const paidStatuses = new Set([
+    'paid',
+    'captured',
+    'success',
+    'successful',
+    'completed',
+  ]);
+
+  // Online orders are customer orders only after payment succeeds.
+  // Pending/failed/cancelled payment attempts must not appear in My Orders.
+  if (!paidStatuses.has(paymentStatus)) {
+    console.log(
+      '[ORDERS] Hiding unpaid online payment attempt:',
+      order?.id,
+      '| status:',
+      status,
+      '| paymentStatus:',
+      paymentStatus
+    );
+    return false;
+  }
+
+  return true;
 }
 
 export const useOrderStore = create<OrderState>()(
@@ -184,9 +261,13 @@ export const useOrderStore = create<OrderState>()(
               ? raw
               : raw.orders ?? raw.items ?? raw.data ?? [];
 
+            const visibleOrders = rawOrders.filter(shouldShowCustomerOrder);
+
             console.log(
               '[ORDERS] Total raw orders:',
-              rawOrders.length
+              rawOrders.length,
+              '| visible customer orders:',
+              visibleOrders.length
             );
 
             if (rawOrders.length > 0) {
@@ -241,7 +322,7 @@ export const useOrderStore = create<OrderState>()(
             };
 
             const mappedOrders: Order[] = await Promise.all(
-              rawOrders.map(async (o: any) => {
+              visibleOrders.map(async (o: any) => {
                 // Total
                 const total = Number(
                   o.totalAmount ??
@@ -361,6 +442,53 @@ export const useOrderStore = create<OrderState>()(
                     o.status || 'CONFIRMED',
 
                   total,
+
+                  subtotal: Number(
+                    o.subtotal ??
+                    o.subTotal ??
+                    o.itemsSubtotal ??
+                    0
+                  ),
+
+                  discountAmount: Number(
+                    o.discountAmount ??
+                    o.discount ??
+                    0
+                  ),
+
+                  shippingAmount:
+                    o.shippingAmount != null
+                      ? Number(o.shippingAmount)
+                      : o.shippingFee != null
+                        ? Number(o.shippingFee)
+                        : o.deliveryFee != null
+                          ? Number(o.deliveryFee)
+                          : undefined,
+
+                  paymentMethod:
+                    o.paymentMethod ||
+                    o.payment?.method ||
+                    '',
+
+                  paymentStatus:
+                    o.paymentStatus ||
+                    o.payment?.status ||
+                    '',
+
+                  razorpayOrderId:
+                    o.razorpayOrderId ||
+                    o.payment?.orderId ||
+                    '',
+
+                  razorpayPaymentId:
+                    o.razorpayPaymentId ||
+                    o.payment?.paymentId ||
+                    '',
+
+                  trackingNumber:
+                    o.trackingNumber ||
+                    o.tracking?.number ||
+                    '',
 
                   itemsCount:
                     items.length,
@@ -514,7 +642,99 @@ export const useOrderStore = create<OrderState>()(
           );
 
           if (response.data.success) {
-            await get().fetchOrders();
+            const rawData = response.data.data ?? {};
+            const paymentData = rawData.payment ?? {};
+
+            // Normalize the backend response so checkout never has to guess
+            // whether Razorpay fields are nested or top-level.
+            let resolvedOrderId =
+              rawData.orderId ??
+              rawData.order?.id ??
+              rawData.id ??
+              null;
+
+            const normalizedRazorpayOrderId =
+              rawData.razorpayOrderId ??
+              rawData.razorpay_order_id ??
+              paymentData.orderId ??
+              paymentData.razorpayOrderId ??
+              null;
+
+            // Some backend versions return only the Razorpay order id.
+            // Resolve the internal Closho order id without putting the
+            // unpaid order into Zustand's visible orders list.
+            if (!resolvedOrderId && normalizedRazorpayOrderId) {
+              try {
+                const lookup = await api.get(
+                  '/orders?status=all&page=1&limit=50'
+                );
+
+                const lookupRaw =
+                  lookup.data?.data;
+
+                const lookupOrders: any[] =
+                  Array.isArray(lookupRaw)
+                    ? lookupRaw
+                    : lookupRaw?.orders ??
+                    lookupRaw?.items ??
+                    lookupRaw?.data ??
+                    [];
+
+                const matchingOrder =
+                  lookupOrders.find((order: any) => {
+                    const orderRazorpayId =
+                      order?.razorpayOrderId ||
+                      order?.razorpay_order_id ||
+                      order?.payment?.orderId ||
+                      order?.payment?.razorpayOrderId ||
+                      '';
+
+                    return orderRazorpayId === normalizedRazorpayOrderId;
+                  });
+
+                resolvedOrderId =
+                  matchingOrder?.id ?? null;
+
+                console.log(
+                  '[ORDERS] Resolved internal orderId:',
+                  resolvedOrderId,
+                  'from Razorpay order:',
+                  normalizedRazorpayOrderId
+                );
+              } catch (lookupError: any) {
+                console.warn(
+                  '[ORDERS] Could not resolve internal orderId:',
+                  lookupError?.message ||
+                  lookupError
+                );
+              }
+            }
+
+            const normalizedData = {
+              ...rawData,
+              orderId: resolvedOrderId,
+              orderNumber:
+                rawData.orderNumber ??
+                rawData.order?.orderNumber ??
+                null,
+              razorpayOrderId:
+                normalizedRazorpayOrderId,
+              key_id:
+                rawData.key_id ??
+                rawData.keyId ??
+                paymentData.key_id ??
+                paymentData.keyId ??
+                paymentData.key ??
+                null,
+              amount:
+                rawData.amount ??
+                paymentData.amount ??
+                null,
+              currency:
+                rawData.currency ??
+                paymentData.currency ??
+                'INR',
+            };
 
             set({
               isLoading: false,
@@ -522,7 +742,7 @@ export const useOrderStore = create<OrderState>()(
 
             return {
               success: true,
-              data: response.data.data,
+              data: normalizedData,
             };
           } else {
             console.warn(
@@ -568,6 +788,133 @@ export const useOrderStore = create<OrderState>()(
             isLoading: false,
             error: errorMsg,
           });
+
+          return {
+            success: false,
+            error: errorMsg,
+          };
+        }
+      },
+
+      verifyPayment: async ({ orderId, paymentId, signature }) => {
+        set({ isLoading: true, error: null });
+
+        try {
+          if (!orderId || !paymentId || !signature) {
+            const error = 'Payment verification data is incomplete.';
+            set({ isLoading: false, error });
+            return { success: false, error };
+          }
+
+          console.log('[ORDERS] ===== VERIFY RAZORPAY PAYMENT =====');
+          console.log('[ORDERS] orderId:', orderId);
+          console.log('[ORDERS] paymentId:', paymentId);
+          console.log('[ORDERS] signature present:', Boolean(signature));
+
+          const response = await api.post('/orders/verify-payment', {
+            orderId,
+            paymentId,
+            signature,
+          });
+
+          console.log(
+            '[ORDERS] verify-payment response:',
+            JSON.stringify(response.data, null, 2)
+          );
+
+          if (!response.data?.success) {
+            const error =
+              response.data?.message ||
+              response.data?.data?.message ||
+              'Payment verification failed.';
+
+            set({ isLoading: false, error });
+            return { success: false, error };
+          }
+
+          set({ isLoading: false, error: null });
+
+          // Only refresh after verification succeeds. This prevents the
+          // pre-payment pending order from being inserted into the UI.
+          await get().fetchOrders();
+
+          return {
+            success: true,
+            data: response.data.data,
+          };
+        } catch (error: any) {
+          const serverErr = error?.response?.data;
+          const errorMsg =
+            serverErr?.errors?.[0]?.message ||
+            serverErr?.message ||
+            error?.message ||
+            'Payment verification failed.';
+
+          console.warn(
+            '[ORDERS] verify-payment error:',
+            JSON.stringify(serverErr, null, 2)
+          );
+
+          set({ isLoading: false, error: errorMsg });
+          return { success: false, error: errorMsg };
+        }
+      },
+
+      cancelOrder: async (orderId) => {
+        try {
+          if (!orderId) {
+            return {
+              success: false,
+              error: 'Order ID is missing.',
+            };
+          }
+
+          console.log('[ORDERS] Cancelling order on server:', orderId);
+
+          // Customer API exposes POST /orders/:orderId/cancel. There is no
+          // documented DELETE /orders/:orderId endpoint, so the UI must not
+          // pretend that deleting a card/order locally is enough.
+          const response = await api.post(
+            `/orders/${encodeURIComponent(orderId)}/cancel`
+          );
+
+          console.log(
+            '[ORDERS] cancel response:',
+            JSON.stringify(response.data, null, 2)
+          );
+
+          if (response.status < 200 || response.status >= 300 || response.data?.success === false) {
+            const error =
+              response.data?.message ||
+              response.data?.errors?.[0]?.message ||
+              'Unable to cancel the order.';
+
+            return {
+              success: false,
+              error,
+            };
+          }
+
+          // Re-read from the server so the UI cannot keep a stale order
+          // after cancellation. The server remains the source of truth.
+          await get().fetchOrders();
+
+          return {
+            success: true,
+            data: response.data.data,
+          };
+        } catch (error: any) {
+          const serverErr = error?.response?.data;
+          const errorMsg =
+            serverErr?.errors?.[0]?.message ||
+            serverErr?.message ||
+            error?.message ||
+            'Unable to cancel the order.';
+
+          console.warn(
+            '[ORDERS] cancelOrder error:',
+            JSON.stringify(serverErr, null, 2)
+          );
 
           return {
             success: false,

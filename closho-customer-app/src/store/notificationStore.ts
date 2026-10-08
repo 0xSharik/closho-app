@@ -23,7 +23,7 @@ export const useNotificationStore = create<NotificationState>()((set, get) => ({
   notifications: [],
   isLoading: false,
   error: null,
-  
+
   fetchNotifications: async () => {
     set({ isLoading: true });
     try {
@@ -38,12 +38,12 @@ export const useNotificationStore = create<NotificationState>()((set, get) => ({
       set({ isLoading: false, error: error.message });
     }
   },
-  
+
   markAsRead: async (id: string) => {
     try {
       await api.patch(`/notifications/${id}/read`);
       set((state) => ({
-        notifications: state.notifications.map((n) => 
+        notifications: state.notifications.map((n) =>
           n.id === id ? { ...n, isRead: true } : n
         )
       }));
@@ -51,7 +51,7 @@ export const useNotificationStore = create<NotificationState>()((set, get) => ({
       console.error('Failed to mark as read', error);
     }
   },
-  
+
   markAllAsRead: async () => {
     try {
       await api.post('/notifications/read-all');

@@ -14,26 +14,29 @@ import { colors } from '../src/theme/colors';
 import { spacing } from '../src/theme/spacing';
 import { typography } from '../src/theme/typography';
 import { friendlyError } from '../src/utils/friendlyError';
+import { goBackOrHome } from '../src/utils/navigation';
 import { logUserActionFailure, logUserEvent } from '../src/utils/userEventLogger';
 let RazorpayCheckout: any = null;
-try {
-  const RazorpayModule = require('react-native-razorpay');
-  RazorpayCheckout = RazorpayModule.default || RazorpayModule;
-  if (RazorpayCheckout && typeof RazorpayCheckout.open === 'function') {
-    console.log('[Razorpay] ✅ Native module loaded successfully');
-  } else {
-    console.warn('[Razorpay] ⚠️ Module loaded but .open() not found:', Object.keys(RazorpayCheckout || {}));
-    RazorpayCheckout = null;
+if (Platform.OS !== 'web') {
+  try {
+    const RazorpayModule = require('react-native-razorpay');
+    RazorpayCheckout = RazorpayModule.default || RazorpayModule;
+    if (RazorpayCheckout && typeof RazorpayCheckout.open === 'function') {
+      console.log('[Razorpay] ✅ Native module loaded successfully');
+    } else {
+      console.warn('[Razorpay] ⚠️ Module loaded but .open() not found:', Object.keys(RazorpayCheckout || {}));
+      RazorpayCheckout = null;
+    }
+  } catch (e: any) {
+    console.log('[Razorpay] ❌ Native module not available:', e?.message);
   }
-} catch (e: any) {
-  console.log('[Razorpay] ❌ Native module not available:', e?.message);
 }
 
 export default function CheckoutScreen() {
   const router = useRouter();
   const { items, getCartTotal, discountAmount, clearCart, couponCode, activeStoreId: cartActiveStoreId } = useCartStore();
   const { addresses, paymentMethods } = useProfileStore();
-  const { createOrder } = useOrderStore();
+  const { createOrder, verifyPayment, cancelOrder } = useOrderStore();
   const { currentStore } = useStoreStore();
   const { showSnackbar } = useSnackbar();
 
@@ -67,105 +70,431 @@ export default function CheckoutScreen() {
 
   const handlePlaceOrder = async () => {
     if (!selectedAddressId) {
-      logUserEvent('checkout.validation_failed', { fields: 'address' });
-      showSnackbar('Please select a delivery address', 'error');
+      logUserEvent('checkout.validation_failed', {
+        fields: 'address',
+      });
+      showSnackbar(
+        'Please select a delivery address',
+        'error'
+      );
       return;
     }
 
-    // Resolve storeId: cart's activeStoreId is most reliable (it's the store where items were added)
-    // then fall back to currentStore, then fetch all stores
-    let activeStore = currentStore || useStoreStore.getState().availableStores[0];
-
-    // If cartActiveStoreId is set, prefer it — it's the authoritative store for this cart
-    const resolvedStoreId = cartActiveStoreId
-      || currentStore?.id
-      || useStoreStore.getState().availableStores[0]?.id;
-
-    if (!resolvedStoreId) {
-      await useStoreStore.getState().fetchAllStores();
-      activeStore = useStoreStore.getState().availableStores[0];
+    if (!items.length) {
+      showSnackbar(
+        'Your cart is empty.',
+        'error'
+      );
+      return;
     }
 
-    const finalStoreId = resolvedStoreId || activeStore?.id;
-    console.log('[checkout] resolvedStoreId:', finalStoreId, '| cartActiveStoreId:', cartActiveStoreId, '| currentStore?.id:', currentStore?.id);
+    // A checkout is always one-store only. The cart may contain many
+    // products and quantities, but all of them must belong to the same store.
+    const itemStoreIds = Array.from(
+      new Set(
+        items
+          .map(item => item.storeId)
+          .filter(Boolean) as string[]
+      )
+    );
+
+    const finalStoreId =
+      itemStoreIds.length === 1
+        ? itemStoreIds[0]
+        : itemStoreIds.length === 0
+          ? cartActiveStoreId || currentStore?.id
+          : null;
+
+    console.log(
+      '[checkout] itemStoreIds:',
+      itemStoreIds,
+      '| cartActiveStoreId:',
+      cartActiveStoreId,
+      '| currentStoreId:',
+      currentStore?.id,
+      '| finalStoreId:',
+      finalStoreId
+    );
+
+    if (itemStoreIds.length > 1) {
+      logUserEvent(
+        'checkout.validation_failed',
+        {
+          fields: 'multiple_stores',
+        }
+      );
+      showSnackbar(
+        'Your cart contains products from multiple stores. Please keep products from one store only.',
+        'error'
+      );
+      return;
+    }
 
     if (!finalStoreId) {
-      logUserEvent('checkout.validation_failed', { fields: 'store' });
-      showSnackbar('No store available. Please try again later.', 'error');
+      logUserEvent(
+        'checkout.validation_failed',
+        {
+          fields: 'store',
+        }
+      );
+      showSnackbar(
+        'We could not determine the delivery store. Please return to the store and try again.',
+        'error'
+      );
       return;
     }
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // Do not use the saved card brand to determine payment type.
+    // Saved cards are not a separate backend payment rail here.
+    // Every non-COD option goes through Razorpay.
+    const isRazorpay =
+      selectedPaymentId !== 'cod';
+
+    Haptics.impactAsync(
+      Haptics.ImpactFeedbackStyle.Medium
+    );
     setIsPlacingOrder(true);
 
-    try {
-      // Resolve payment method — works for both real saved methods and fallback defaults (id='cod', id='razorpay')
-      const fallbackMethods: Record<string, string> = { cod: 'cod', razorpay: 'razorpay' };
-      const savedMethod = paymentMethods.find(p => p.id === selectedPaymentId)?.brand?.toLowerCase();
-      const resolvedMethod = savedMethod || fallbackMethods[selectedPaymentId] || 'cod';
-      const isRazorpay = resolvedMethod === 'razorpay' || resolvedMethod === 'card' || resolvedMethod === 'upi';
+    let createdOrderId: string | null = null;
 
+    try {
       const response = await createOrder({
         storeId: finalStoreId,
         addressId: selectedAddressId,
-        paymentMethod: isRazorpay ? 'razorpay' : 'cod',
-        couponCode: couponCode
+        paymentMethod: isRazorpay
+          ? 'razorpay'
+          : 'cod',
+        couponCode: couponCode || null,
+        // The UI has always charged this amount, but it was never sent to the
+        // order API. The backend therefore created a Razorpay order for the
+        // merchandise subtotal only. Keep the server order total aligned with
+        // the checkout summary by sending the explicit delivery fee.
+        deliveryFee: shipping,
+        subtotal,
+        discountAmount,
+        totalAmount: total,
       });
 
-      if (response.success) {
-        logUserEvent('checkout.order_created', { paymentMethod: isRazorpay ? 'razorpay' : 'cod', itemCount });
-        // If COD, just show success directly
-        if (!isRazorpay) {
-          handleSuccessOrder();
-          return;
-        }
-
-        // Razorpay Flow
-        if (Platform.OS === 'web' || !RazorpayCheckout || typeof RazorpayCheckout.open !== 'function') {
-          showSnackbar('Razorpay native checkout requires custom build. Simulating successful order...', 'info');
-          logUserEvent('checkout.payment_simulated', { reason: 'native_module_unavailable' });
-          handleSuccessOrder();
-          return;
-        }
-
-        const options = {
-          description: 'Closho Order Payment',
-          image: 'https://closho.com/logo.png',
-          currency: 'INR',
-          key: 'rzp_test_TKk3WimBBVHPpT',
-          amount: (total * 100).toString(),
-          name: 'Closho',
-          order_id: response.data?.razorpayOrderId || response.data?.id || '', // Provided by backend
-          theme: { color: colors.primary }
-        };
-
-        try {
-          console.log('[Razorpay] Opening checkout with options:', JSON.stringify({ ...options, key: '***' }));
-          const data = await RazorpayCheckout.open(options);
-          logUserEvent('checkout.payment_succeeded', { provider: 'razorpay' });
-          handleSuccessOrder();
-        } catch (error: any) {
-          logUserActionFailure('checkout.payment_failed', error, { provider: 'razorpay' });
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-          showSnackbar('Payment failed or cancelled', 'error');
-        }
-      } else {
-        logUserEvent('checkout.order_creation_failed', { reason: 'rejected' });
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        showSnackbar(friendlyError(response.error, 'We could not place your order. Please try again.'), 'error');
+      if (!response.success) {
+        logUserEvent(
+          'checkout.order_creation_failed',
+          {
+            reason: 'rejected',
+          }
+        );
+        Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Error
+        );
+        showSnackbar(
+          friendlyError(
+            response.error,
+            'We could not place your order. Please try again.'
+          ),
+          'error'
+        );
+        return;
       }
-    } catch (e) {
-      logUserActionFailure('checkout.order_creation_failed', e);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      showSnackbar('Something went wrong', 'error');
+
+      const orderData = response.data || {};
+      createdOrderId =
+        orderData.orderId ||
+        orderData.id ||
+        null;
+
+      logUserEvent(
+        'checkout.payment_session_created',
+        {
+          paymentMethod: isRazorpay
+            ? 'razorpay'
+            : 'cod',
+          itemCount,
+          storeId: finalStoreId,
+        }
+      );
+
+      // COD is already a confirmed customer order.
+      if (!isRazorpay) {
+        await handleSuccessOrder();
+        return;
+      }
+
+      const razorpayOrderId =
+        orderData.razorpayOrderId ||
+        orderData.payment?.orderId ||
+        '';
+
+      const razorpayKey =
+        orderData.key_id ||
+        orderData.keyId ||
+        orderData.payment?.key_id ||
+        orderData.payment?.key ||
+        '';
+
+      const backendAmount =
+        Number(orderData.amount);
+
+      const expectedAmountPaise = Math.round(total * 100);
+      const amountPaise =
+        Number.isFinite(backendAmount) &&
+          backendAmount > 0
+          ? Math.round(backendAmount)
+          : expectedAmountPaise;
+
+      // Never silently show one total to the customer and charge another.
+      // If the backend has not yet incorporated deliveryFee, stop before
+      // opening Razorpay rather than charging the wrong amount.
+      if (isRazorpay && Number.isFinite(backendAmount) && backendAmount > 0 && amountPaise !== expectedAmountPaise) {
+        console.error('[Razorpay] Backend amount does not match checkout total.', {
+          backendAmountPaise: amountPaise,
+          expectedAmountPaise,
+          subtotal,
+          discountAmount,
+          deliveryFee: shipping,
+        });
+
+        if (createdOrderId) {
+          await cancelOrder(createdOrderId);
+        }
+
+        showSnackbar(
+          'Payment total is out of sync. Please try again after the order total is recalculated.',
+          'error'
+        );
+        return;
+      }
+
+      if (
+        Platform.OS === 'web' ||
+        !RazorpayCheckout ||
+        typeof RazorpayCheckout.open !== 'function'
+      ) {
+        if (createdOrderId) {
+          await cancelOrder(createdOrderId);
+        }
+
+        logUserActionFailure(
+          'checkout.payment_unavailable',
+          new Error(
+            'Razorpay native checkout is unavailable in this build.'
+          ),
+          {
+            provider: 'razorpay',
+          }
+        );
+
+        showSnackbar(
+          'Online payment is unavailable in this build. Please use Cash on Delivery or install the Android build with Razorpay enabled.',
+          'error'
+        );
+        return;
+      }
+
+      if (!razorpayOrderId || !razorpayKey) {
+        if (createdOrderId) {
+          await cancelOrder(createdOrderId);
+        }
+
+        console.error(
+          '[Razorpay] Missing gateway configuration:',
+          {
+            createdOrderId,
+            razorpayOrderId,
+            hasKey: Boolean(razorpayKey),
+            amountPaise,
+          }
+        );
+
+        showSnackbar(
+          'Payment could not be started because the payment gateway configuration is incomplete.',
+          'error'
+        );
+        return;
+      }
+
+      // The verification endpoint expects the internal Closho order id,
+      // not only Razorpay's order id. Do not open the gateway if we cannot
+      // establish that mapping safely.
+      if (!createdOrderId) {
+        console.error(
+          '[Razorpay] Backend did not return/resolve the internal orderId.',
+          {
+            razorpayOrderId,
+          }
+        );
+
+        showSnackbar(
+          'Payment could not be started because the order could not be linked to the payment.',
+          'error'
+        );
+        return;
+      }
+
+      const options = {
+        description:
+          'Closho Order Payment',
+        image:
+          'https://closho.com/logo.png',
+        currency:
+          orderData.currency || 'INR',
+        key: razorpayKey,
+        amount:
+          String(amountPaise),
+        name: 'Closho',
+        order_id:
+          razorpayOrderId,
+        theme: {
+          color: colors.primary,
+        },
+      };
+
+      let paymentReturnedFromGateway = false;
+
+      try {
+        console.log(
+          '[Razorpay] Opening checkout:',
+          JSON.stringify(
+            {
+              ...options,
+              key: '***',
+            },
+            null,
+            2
+          )
+        );
+
+        const paymentResult =
+          await RazorpayCheckout.open(
+            options
+          );
+
+        const paymentId =
+          paymentResult?.razorpay_payment_id ||
+          paymentResult?.razorpayPaymentId ||
+          '';
+
+        // From this point onward the gateway has returned a payment id.
+        // Never cancel the server order blindly if verification later fails,
+        // because the customer may already have been charged.
+        paymentReturnedFromGateway = Boolean(paymentId);
+
+        const returnedOrderId =
+          paymentResult?.razorpay_order_id ||
+          paymentResult?.razorpayOrderId ||
+          razorpayOrderId;
+
+        const signature =
+          paymentResult?.razorpay_signature ||
+          paymentResult?.razorpaySignature ||
+          '';
+
+        if (!paymentId || !signature) {
+          throw new Error(
+            'Razorpay completed without payment verification data.'
+          );
+        }
+
+        // Never treat the native checkout callback alone as proof of payment.
+        // The backend must verify the Razorpay signature first.
+        const verification =
+          await verifyPayment({
+            orderId:
+              createdOrderId || returnedOrderId,
+            paymentId,
+            signature,
+          });
+
+        if (!verification.success) {
+          // Do not cancel an order after Razorpay has returned a payment.
+          // A verification/network failure can happen after the customer
+          // was actually charged. The backend must reconcile that payment.
+          throw new Error(
+            verification.error ||
+            'Payment verification failed.'
+          );
+        }
+
+        logUserEvent(
+          'checkout.payment_succeeded',
+          {
+            provider: 'razorpay',
+            paymentId,
+          }
+        );
+
+        await handleSuccessOrder();
+      } catch (error: any) {
+        logUserActionFailure(
+          'checkout.payment_failed',
+          error,
+          {
+            provider: 'razorpay',
+            orderId: createdOrderId,
+          }
+        );
+
+        // If the native checkout was cancelled/failed before returning a
+        // payment id, clean up the server-side payment attempt. If Razorpay
+        // returned a payment, leave reconciliation to the backend instead.
+        if (
+          !paymentReturnedFromGateway &&
+          createdOrderId
+        ) {
+          const cancelResult =
+            await cancelOrder(
+              createdOrderId
+            );
+
+          console.log(
+            '[checkout] unpaid order cleanup:',
+            cancelResult
+          );
+        }
+
+        Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Error
+        );
+
+        const code =
+          error?.code ||
+          error?.error?.code;
+
+        const message =
+          code === 'BAD_REQUEST_ERROR'
+            ? 'Payment was not completed. No order was placed.'
+            : 'Payment failed or was cancelled. No order was placed.';
+
+        showSnackbar(
+          message,
+          'error'
+        );
+      }
+    } catch (e: any) {
+      logUserActionFailure(
+        'checkout.order_creation_failed',
+        e
+      );
+      Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Error
+      );
+      showSnackbar(
+        friendlyError(
+          e?.message,
+          'Something went wrong while starting checkout.'
+        ),
+        'error'
+      );
     } finally {
       setIsPlacingOrder(false);
     }
   };
 
-  const handleSuccessOrder = () => {
+  const handleSuccessOrder = async () => {
     logUserEvent('checkout.completed', { itemCount });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    clearCart();
+    const clearResult = await clearCart();
+    if (!clearResult.success) {
+      console.warn('[checkout] Order succeeded but cart cleanup failed.');
+    }
     setShowSuccessModal(true);
     Animated.spring(successScaleAnim, {
       toValue: 1,
@@ -187,14 +516,20 @@ export default function CheckoutScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => goBackOrHome(router)}>
           <Ionicons name="arrow-back" size={24} color={colors.text.primary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Checkout</Text>
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+      >
 
         {/* Delivery Address */}
         <View style={styles.section}>

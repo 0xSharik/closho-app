@@ -25,6 +25,7 @@ import { colors } from '../src/theme/colors';
 import { spacing } from '../src/theme/spacing';
 import { typography } from '../src/theme/typography';
 import { friendlyError } from '../src/utils/friendlyError';
+import { goBackOrHome } from '../src/utils/navigation';
 import {
   logUserEvent,
   logValidationFailure,
@@ -168,7 +169,7 @@ export default function AddressesScreen() {
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Keyboard.dismiss();
-    router.back();
+    goBackOrHome(router);
   };
 
   // ─────────────────────────────────────────────────────────────

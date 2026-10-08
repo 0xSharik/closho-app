@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
@@ -10,21 +9,12 @@ import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../../src/store/authStore';
-import { friendlyError } from '../../src/utils/friendlyError';
-import { logUserActionFailure, logUserEvent, logValidationFailure } from '../../src/utils/userEventLogger';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
+import { friendlyError } from '../../src/utils/friendlyError';
+import { logUserActionFailure, logUserEvent, logValidationFailure } from '../../src/utils/userEventLogger';
 
-try {
-  if (GoogleSignin && typeof GoogleSignin.configure === 'function') {
-    GoogleSignin.configure({
-      webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-    });
-  }
-} catch (e) {
-  console.log('[GoogleSignin] Not supported in Expo Go environment');
-}
 
 const loginSchema = z.object({
   emailOrPhone: z.string().min(3, 'Please enter a valid email or phone number'),
@@ -112,47 +102,48 @@ export default function LoginScreen() {
       showSnackbar(friendlyError(result.error, 'We could not send a code. Please try again.'), 'error');
     }
   };
-
   const handleVerifyOtp = async () => {
-    if (otp.length !== 6) {
-      logValidationFailure('auth.otp_verification', ['otp']);
+    if (!phone || otp.length !== 6) {
       showSnackbar('Please enter the 6-digit OTP', 'error');
       return;
     }
 
-    setIsLoading(true);
-    const result = await useAuthStore.getState().verifyOtp(phone, otp);
-    setIsLoading(false);
-
-    console.log('[AUTH DEBUG] ===== ROUTING STATE =====');
-    console.log('[AUTH DEBUG] isAuthenticated:', useAuthStore.getState().isAuthenticated);
-    console.log('[AUTH DEBUG] hasResetToken:', !!result.resetToken);
+    const result =
+      await useAuthStore
+        .getState()
+        .verifyOtp(phone, otp);
 
     if (!result.success) {
-      logUserEvent('auth.otp_verification_failed', { reason: 'invalid_or_expired' });
-      showSnackbar(friendlyError(result.error, 'The code you entered is incorrect. Please try again.'), 'error');
+      showSnackbar(
+        result.error || 'Invalid OTP',
+        'error'
+      );
       return;
     }
 
-    if (result.resetToken) {
-      console.log('[AUTH DEBUG] OTP is password-reset flow -> reset-password');
-      showSnackbar('OTP verified! Please set your new password.', 'info');
+    const authState =
+      useAuthStore.getState();
 
-      router.push({
-        pathname: '/(auth)/reset-password',
-        params: { resetToken: result.resetToken },
-      });
-      return;
-    }
+    if (
+      authState.isAuthenticated &&
+      authState.token
+    ) {
+      logUserEvent(
+        'auth.login_succeeded',
+        { method: 'otp' }
+      );
 
-    if (useAuthStore.getState().isAuthenticated) {
-      logUserEvent('auth.login_succeeded', { method: 'otp' });
-      console.log('[AUTH DEBUG] OTP login succeeded with real access token.');
-      showSnackbar('Successfully logged in!', 'success');
+      showSnackbar(
+        'Successfully logged in!',
+        'success'
+      );
+
+      router.replace('/(tabs)/reels');
     }
   };
 
   const handleGoogleLogin = async () => {
+    let statusCodes: any;
     logUserEvent('auth.login_submitted', { method: 'google' });
     console.log('[GoogleSignIn] ===== BUTTON PRESSED =====');
 
@@ -162,6 +153,22 @@ export default function LoginScreen() {
       if (Platform.OS === 'web') {
         console.log('[GoogleSignIn] Web platform, stopping');
         showSnackbar('Google Login is not supported on Web in this demo.', 'info');
+        return;
+      }
+
+      let GoogleSignin: any;
+      try {
+        const googleModule = require('@react-native-google-signin/google-signin');
+        GoogleSignin = googleModule.GoogleSignin;
+        statusCodes = googleModule.statusCodes;
+        if (typeof GoogleSignin?.configure === 'function') {
+          GoogleSignin.configure({
+            webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+          });
+        }
+      } catch (loadError: any) {
+        console.warn('[GoogleSignIn] Native module unavailable:', loadError?.message || loadError);
+        showSnackbar('Google Sign In is unavailable in this build.', 'info');
         return;
       }
 
@@ -280,7 +287,12 @@ export default function LoginScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+      >
         <Animated.View style={[styles.header, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
           <Text style={styles.logoText}>CLOSHO</Text>
           <Text style={styles.title}>Welcome Back</Text>

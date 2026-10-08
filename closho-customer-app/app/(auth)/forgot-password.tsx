@@ -12,6 +12,7 @@ import { friendlyError } from '../../src/utils/friendlyError';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
+import { goBackOrHome } from '../../src/utils/navigation';
 
 const forgotSchema = z.object({
   email: z.string().email('Please enter a valid email address'),
@@ -65,7 +66,7 @@ export default function ForgotPasswordScreen() {
 
   return (
     <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}>
         <Animated.View style={[styles.content, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
           <View style={styles.header}>
             <Text style={styles.title}>Forgot Password</Text>
@@ -83,7 +84,7 @@ export default function ForgotPasswordScreen() {
 
             <Button title="Send OTP" onPress={handleSubmit(onSubmit)} isLoading={isLoading} style={styles.btn} />
 
-            <Button title="Back to Login" variant="text" onPress={() => router.back()} style={styles.backBtn} />
+            <Button title="Back to Login" variant="text" onPress={() => goBackOrHome(router)} style={styles.backBtn} />
           </View>
         </Animated.View>
       </ScrollView>

@@ -11,6 +11,7 @@ import { useWishlistStore } from '../src/store/wishlistStore';
 import { useCartStore } from '../src/store/cartStore';
 import { useSnackbar } from '../src/components/ui/SnackbarContext';
 import { Button } from '../src/components/ui/Button';
+import { goBackOrHome } from '../src/utils/navigation';
 
 export default function WishlistScreen() {
   const router = useRouter();
@@ -24,7 +25,7 @@ export default function WishlistScreen() {
 
   const handleBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.back();
+    goBackOrHome(router);
   };
 
   return (
@@ -98,7 +99,14 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.borderLight,
   },
   backBtn: {
-    padding: spacing.xs,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.surfaceLight,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerTitle: {
     fontSize: typography.fontSize.lg,

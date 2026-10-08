@@ -1,7 +1,14 @@
-import axios from 'axios';
+import axios, {
+  AxiosError,
+  AxiosRequestConfig,
+  AxiosResponse,
+} from 'axios';
 import { env } from '../config/env';
 import { useAuthStore } from '../store/authStore';
-import { logUserActionFailure, logUserEvent } from '../utils/userEventLogger';
+import {
+  logUserActionFailure,
+  logUserEvent,
+} from '../utils/userEventLogger';
 
 const api = axios.create({
   baseURL: env.API_URL,
@@ -10,7 +17,20 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
-// Request interceptor to attach token
+
+let refreshPromise: Promise<string | null> | null = null;
+
+export interface CreateOrderRequest {
+  storeId: string;
+  addressId: string;
+  paymentMethod: string;
+  couponCode?: string | null;
+  deliveryFee?: number;
+  subtotal?: number;
+  discountAmount?: number;
+  totalAmount?: number;
+}
+
 api.interceptors.request.use(
   async (config) => {
     try {
@@ -23,65 +43,207 @@ api.interceptors.request.use(
       });
 
       if (token) {
+        config.headers = config.headers ?? {};
         config.headers.Authorization = `Bearer ${token}`;
       }
     } catch (error) {
-      logUserActionFailure('api.authorization_setup_failed', error);
+      logUserActionFailure(
+        'api.authorization_setup_failed',
+        error
+      );
     }
 
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Response interceptor for handling common errors
+const refreshAccessToken = async (): Promise<string | null> => {
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  const { refreshToken, sessionId } =
+    useAuthStore.getState();
+
+  if (!refreshToken || !sessionId) {
+    return null;
+  }
+
+  refreshPromise = (async () => {
+    try {
+      const response = await axios.post(
+        `${env.API_URL}/auth/refresh`,
+        {
+          sessionId,
+          refreshToken,
+        },
+        {
+          timeout: 30000,
+        }
+      );
+
+      if (!response.data?.success) {
+        return null;
+      }
+
+      const newAccessToken =
+        response.data?.data?.accessToken;
+
+      if (!newAccessToken) {
+        return null;
+      }
+
+      const newRefreshToken =
+        response.data?.data?.refreshToken;
+
+      useAuthStore.setState({
+        token: newAccessToken,
+        ...(newRefreshToken
+          ? { refreshToken: newRefreshToken }
+          : {}),
+      });
+
+      return newAccessToken;
+    } catch (error) {
+      logUserActionFailure(
+        'auth.token_refresh_failed',
+        error
+      );
+
+      return null;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
+};
+
 api.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
-      error.message = 'The server is taking longer than usual to respond. It might be waking up, please try again.';
-    } else if (error.response?.status === 401) {
-      const originalRequest = error.config;
+  (response: AxiosResponse) => response,
+
+  async (error: AxiosError) => {
+    const errorMessage =
+      typeof error?.message === 'string'
+        ? error.message
+        : '';
+
+    if (
+      error?.code === 'ECONNABORTED' ||
+      errorMessage.toLowerCase().includes('timeout')
+    ) {
+      error.message =
+        'The server is taking longer than usual to respond. Please try again.';
+
+      return Promise.reject(error);
+    }
+
+    if (!error.response) {
+      logUserActionFailure(
+        'api.network_error',
+        error
+      );
+
+      return Promise.reject(error);
+    }
+
+    if (error.response.status === 401) {
+      const originalRequest =
+        error.config as AxiosRequestConfig & {
+          _retry?: boolean;
+        };
+
       const url = originalRequest?.url || '';
 
-      // NEVER trigger logout/refresh for any /auth/ endpoint.
-      // A 401 on /auth/verify-otp = "wrong OTP", NOT "session expired".
-      const isAuthEndpoint = url.includes('/auth/');
+      const isAuthEndpoint =
+        url.includes('/auth/');
 
-      if (!isAuthEndpoint && !originalRequest._retry) {
+      if (
+        !isAuthEndpoint &&
+        originalRequest &&
+        !originalRequest._retry
+      ) {
         originalRequest._retry = true;
-        const { refreshToken, sessionId, logout } = useAuthStore.getState();
 
-        if (refreshToken && sessionId) {
-          try {
-            console.log('Attempting to refresh token...');
-            const refreshResponse = await axios.post(`${env.API_URL}/auth/refresh`, {
-              sessionId,
-              refreshToken
-            });
+        const newAccessToken =
+          await refreshAccessToken();
 
-            if (refreshResponse.data.success) {
-              const newAccessToken = refreshResponse.data.data.accessToken;
-              useAuthStore.setState({ token: newAccessToken });
-              originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
-              return api(originalRequest);
-            }
-          } catch (refreshError) {
-            logUserActionFailure('auth.token_refresh_failed', refreshError);
-            logout();
-            return Promise.reject(refreshError);
-          }
+        if (newAccessToken) {
+          originalRequest.headers =
+            originalRequest.headers ?? {};
+
+          originalRequest.headers.Authorization =
+            `Bearer ${newAccessToken}`;
+
+          return api(originalRequest);
         }
 
-        const currentToken = useAuthStore.getState().token;
-        logUserEvent('auth.session_expired', { path: url.split('?')[0], hasToken: Boolean(currentToken) });
-        logout();
+        /*
+         * Do NOT immediately logout here.
+         *
+         * A refresh failure can be caused by:
+         * - no internet
+         * - timeout
+         * - backend 500
+         * - server temporarily unavailable
+         *
+         * The user's local session should not be destroyed
+         * because of a temporary network problem.
+         */
+        logUserEvent(
+          'auth.session_refresh_unavailable',
+          {
+            path: url.split('?')[0],
+          }
+        );
+
+        return Promise.reject(error);
+      }
+
+      if (!isAuthEndpoint) {
+        const refreshErrorStatus =
+          error.response?.status;
+
+        /*
+         * Only logout when the authenticated request
+         * has already failed after a refresh attempt.
+         */
+        if (
+          refreshErrorStatus === 401 ||
+          refreshErrorStatus === 403
+        ) {
+          useAuthStore.getState().logout();
+        }
       }
     }
+
+    if (
+      error.response.status >= 500 &&
+      error.response.status <= 599
+    ) {
+      logUserActionFailure(
+        'api.server_error',
+        error
+      );
+    }
+
     return Promise.reject(error);
   }
 );
+
+/**
+ * Create backend order.
+ */
+export const createOrder = async (
+  data: CreateOrderRequest
+) => {
+  const response = await api.post(
+    '/orders',
+    data
+  );
+
+  return response.data;
+};
 
 export default api;
