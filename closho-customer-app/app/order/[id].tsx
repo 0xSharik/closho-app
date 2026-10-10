@@ -273,14 +273,18 @@ export default function OrderDetailsScreen() {
               </Text>
             </View>
           )}
-          {displayOrder.shippingAmount != null && (
-            <View style={styles.priceRow}>
-              <Text style={styles.priceLabel}>Shipping</Text>
-              <Text style={styles.priceValue}>
-                ₹{Number(displayOrder.shippingAmount).toFixed(2)}
+          <View style={styles.priceRow}>
+            <Text style={styles.priceLabel}>Delivery Charge</Text>
+            {Number(displayOrder.deliveryCharge ?? displayOrder.shippingAmount ?? 0) === 0 ? (
+              <Text style={[styles.priceValue, { color: colors.status.success, fontWeight: '700' }]}>
+                FREE
               </Text>
-            </View>
-          )}
+            ) : (
+              <Text style={styles.priceValue}>
+                ₹{Number(displayOrder.deliveryCharge ?? displayOrder.shippingAmount ?? 0).toFixed(2)}
+              </Text>
+            )}
+          </View>
           <View style={[styles.priceRow, { marginTop: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: colors.borderLight }]}>
             <Text style={[styles.priceLabel, { fontWeight: 'bold', color: colors.text.primary }]}>Total</Text>
             <Text style={[styles.priceValue, { fontWeight: '900', color: colors.primary, fontSize: typography.fontSize.lg }]}>

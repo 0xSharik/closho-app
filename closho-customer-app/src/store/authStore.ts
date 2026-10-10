@@ -13,12 +13,13 @@ interface AuthStore extends AuthState {
   setAuth: (user: User, token: string) => Promise<void>;
   login: (emailOrPhone: string, password: string) => Promise<{ success: boolean; error?: string }>;
   googleLogin: (idToken: string) => Promise<{ success: boolean; error?: string }>;
-  sendOtp: (phone: string) => Promise<{ success: boolean; error?: string; errorCode?: string }>;
-  verifyOtp: (phone: string, otp: string) => Promise<{ success: boolean; error?: string }>;
+  sendOtp: (phoneOrEmail: string) => Promise<{ success: boolean; error?: string; errorCode?: string }>;
+  verifyOtp: (phoneOrEmail: string, otp: string) => Promise<{ success: boolean; error?: string }>;
   verifyRegistrationOtp: (email: string, otp: string) => Promise<{ success: boolean; error?: string }>;
   resendRegistrationOtp: () => Promise<{ success: boolean; error?: string }>;
   register: (fullName: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   setPendingPhone: (phone: string) => void;
+  setPendingEmail: (email: string) => void;
   updateUser: (userData: Partial<User>) => Promise<{ success: boolean; message?: string }>;
   fetchProfile: () => Promise<void>;
   logout: () => Promise<void>;
@@ -101,14 +102,18 @@ export const useAuthStore = create<AuthStore>()(
           console.log('[AUTH DEBUG] LOGIN RESPONSE');
           console.log('[AUTH DEBUG] status:', response.status);
           console.log('[AUTH DEBUG] success:', response.data?.success);
-          console.log('[AUTH DEBUG] hasAccessToken:', !!(response.data?.data?.accessToken));
-          console.log('[AUTH DEBUG] hasUser:', !!(response.data?.data?.user));
           if (response.data.success) {
-            const { user, accessToken, refreshToken, sessionId } = response.data.data;
+            const resData = response.data?.data || {};
+            const user = resData.user;
+            const accessToken = resData.accessToken || resData.token;
+            const refreshToken = resData.refreshToken || null;
+            const sessionId = resData.sessionId || resData.session?.id || (typeof resData.session === 'string' ? resData.session : null) || null;
             set({ user, token: accessToken, refreshToken, sessionId, isAuthenticated: true, error: null, isLoading: false });
             console.log('[AUTH DEBUG] LOGIN SESSION CREATED');
             console.log('[AUTH DEBUG] tokenExists:', !!accessToken);
             console.log('[AUTH DEBUG] tokenLength:', accessToken?.length ?? 0);
+            console.log('[AUTH DEBUG] refreshTokenExists:', !!refreshToken);
+            console.log('[AUTH DEBUG] sessionIdExists:', !!sessionId);
             console.log('[AUTH DEBUG] userExists:', !!user);
             console.log('[AUTH DEBUG] isAuthenticated: true');
             // Sync server cart to this device after login
@@ -133,7 +138,11 @@ export const useAuthStore = create<AuthStore>()(
           // Typical endpoint structure: POST /auth/google with idToken
           const response = await api.post('/auth/google', { idToken: idToken });
           if (response.data.success) {
-            const { user, accessToken, refreshToken, sessionId } = response.data.data;
+            const resData = response.data?.data || {};
+            const user = resData.user;
+            const accessToken = resData.accessToken || resData.token;
+            const refreshToken = resData.refreshToken || null;
+            const sessionId = resData.sessionId || resData.session?.id || (typeof resData.session === 'string' ? resData.session : null) || null;
             set({ user, token: accessToken, refreshToken, sessionId, isAuthenticated: true, error: null, isLoading: false });
             // Sync server cart to this device after Google login
             require('./cartStore').useCartStore.getState().syncCartAfterLogin();
@@ -150,7 +159,7 @@ export const useAuthStore = create<AuthStore>()(
         }
       },
 
-      sendOtp: async (phone: string) => {
+      sendOtp: async (phoneOrEmail: string) => {
         set({
           isLoading: true,
           error: null,
@@ -158,32 +167,49 @@ export const useAuthStore = create<AuthStore>()(
 
         try {
           const api = require('../services/api').default;
+          const isEmail = phoneOrEmail.includes('@');
 
-          // Keep only digits
-          const normalizedPhone = phone.replace(/\D/g, '');
+          let payload: Record<string, string>;
+          let normalizedIdentifier: string;
 
-          if (!/^\d{10}$/.test(normalizedPhone)) {
-            const errorMsg = 'Please enter a valid 10-digit phone number.';
-
-            set({
-              isLoading: false,
-              error: errorMsg,
-            });
-
-            return {
-              success: false,
-              error: errorMsg,
-              errorCode: 'INVALID_PHONE',
-            };
+          if (isEmail) {
+            normalizedIdentifier = phoneOrEmail.trim().toLowerCase();
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(normalizedIdentifier)) {
+              const errorMsg = 'Please enter a valid email address.';
+              set({
+                isLoading: false,
+                error: errorMsg,
+              });
+              return {
+                success: false,
+                error: errorMsg,
+                errorCode: 'INVALID_EMAIL',
+              };
+            }
+            payload = { email: normalizedIdentifier };
+          } else {
+            normalizedIdentifier = phoneOrEmail.replace(/\D/g, '');
+            if (!/^\d{10}$/.test(normalizedIdentifier)) {
+              const errorMsg = 'Please enter a valid 10-digit phone number.';
+              set({
+                isLoading: false,
+                error: errorMsg,
+              });
+              return {
+                success: false,
+                error: errorMsg,
+                errorCode: 'INVALID_PHONE',
+              };
+            }
+            payload = { phone: normalizedIdentifier };
           }
 
           console.log('[AUTH DEBUG] ===== LOGIN OTP REQUEST START =====');
           console.log('[AUTH DEBUG] endpoint: /auth/login-otp/request');
-          console.log('[AUTH DEBUG] phone:', normalizedPhone);
+          console.log('[AUTH DEBUG] payload:', payload);
 
-          const response = await api.post('/auth/login-otp/request', {
-            phone: normalizedPhone,
-          });
+          const response = await api.post('/auth/login-otp/request', payload);
 
           console.log('[AUTH DEBUG] LOGIN OTP REQUEST RESPONSE');
           console.log('[AUTH DEBUG] status:', response.status);
@@ -193,21 +219,13 @@ export const useAuthStore = create<AuthStore>()(
             set({
               isLoading: false,
               error: null,
-              pendingPhone: normalizedPhone,
-              pendingEmail: null,
+              pendingPhone: isEmail ? null : normalizedIdentifier,
+              pendingEmail: isEmail ? normalizedIdentifier : null,
               pendingOtp: null,
               otpFlowUsed: 'phone_verification',
             });
 
             console.log('[AUTH DEBUG] LOGIN OTP SENT SUCCESSFULLY');
-            console.log(
-              '[AUTH DEBUG] isNewUser:',
-              response.data?.data?.data?.isNewUser
-            );
-            console.log(
-              '[AUTH DEBUG] expiresIn:',
-              response.data?.data?.data?.expiresIn
-            );
 
             return {
               success: true,
@@ -262,41 +280,60 @@ export const useAuthStore = create<AuthStore>()(
           };
         }
       },
-      verifyOtp: async (phone: string, otp: string) => {
+
+      verifyOtp: async (phoneOrEmail: string, otp: string) => {
         set({
           isLoading: true,
           error: null,
           pendingOtp: otp,
-          pendingPhone: phone,
+          pendingPhone: phoneOrEmail.includes('@') ? null : phoneOrEmail,
+          pendingEmail: phoneOrEmail.includes('@') ? phoneOrEmail : null,
         });
 
         try {
           const api = require('../services/api').default;
+          const isEmail = phoneOrEmail.includes('@');
 
-          const normalizedPhone = phone.replace(/\D/g, '');
+          let payload: Record<string, string>;
+          let normalizedIdentifier: string;
 
-          if (!/^\d{10}$/.test(normalizedPhone)) {
-            const errorMsg = 'Invalid phone number.';
-
-            set({
-              isLoading: false,
-              error: errorMsg,
-            });
-
-            return {
-              success: false,
-              error: errorMsg,
-            };
+          if (isEmail) {
+            normalizedIdentifier = phoneOrEmail.trim().toLowerCase();
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(normalizedIdentifier)) {
+              const errorMsg = 'Invalid email address.';
+              set({
+                isLoading: false,
+                error: errorMsg,
+              });
+              return {
+                success: false,
+                error: errorMsg,
+              };
+            }
+            payload = { email: normalizedIdentifier, otp };
+          } else {
+            normalizedIdentifier = phoneOrEmail.replace(/\D/g, '');
+            if (!/^\d{10}$/.test(normalizedIdentifier)) {
+              const errorMsg = 'Invalid phone number.';
+              set({
+                isLoading: false,
+                error: errorMsg,
+              });
+              return {
+                success: false,
+                error: errorMsg,
+              };
+            }
+            payload = { phone: normalizedIdentifier, otp };
           }
 
-          if (!/^\d{6}$/.test(otp)) {
-            const errorMsg = 'OTP must be exactly 6 digits.';
-
+          if (!/^\d{4,6}$/.test(otp)) {
+            const errorMsg = 'OTP must be 4 to 6 digits.';
             set({
               isLoading: false,
               error: errorMsg,
             });
-
             return {
               success: false,
               error: errorMsg,
@@ -305,13 +342,9 @@ export const useAuthStore = create<AuthStore>()(
 
           console.log('[AUTH DEBUG] ===== LOGIN OTP VERIFY START =====');
           console.log('[AUTH DEBUG] endpoint: /auth/login-otp/verify');
-          console.log('[AUTH DEBUG] phone:', normalizedPhone);
-          console.log('[AUTH DEBUG] otpLength:', otp.length);
+          console.log('[AUTH DEBUG] payload:', payload);
 
-          const response = await api.post('/auth/login-otp/verify', {
-            phone: normalizedPhone,
-            otp,
-          });
+          const response = await api.post('/auth/login-otp/verify', payload);
 
           console.log('[AUTH DEBUG] LOGIN OTP VERIFY RESPONSE');
           console.log('[AUTH DEBUG] status:', response.status);
@@ -345,14 +378,15 @@ export const useAuthStore = create<AuthStore>()(
             data.refreshToken || null;
 
           const sessionId =
-            data.sessionId || null;
+            data.sessionId || data.session?.id || (typeof data.session === 'string' ? data.session : null) || null;
 
           const user =
             data.user || {
               id: data.userId || 'usr_otp',
               fullName: data.fullName || data.name || '',
               name: data.fullName || data.name || '',
-              phone: normalizedPhone,
+              phone: isEmail ? '' : normalizedIdentifier,
+              email: isEmail ? normalizedIdentifier : '',
               role: 'customer',
             };
 
@@ -383,15 +417,18 @@ export const useAuthStore = create<AuthStore>()(
             isLoading: false,
             pendingOtp: null,
             pendingPhone: null,
+            pendingEmail: null,
             otpFlowUsed: null,
           });
 
-          console.log('[AUTH DEBUG] ===== PHONE OTP LOGIN SUCCESS =====');
+          console.log('[AUTH DEBUG] ===== OTP LOGIN SUCCESS =====');
           console.log('[AUTH DEBUG] accessToken exists:', !!accessToken);
           console.log('[AUTH DEBUG] accessToken length:', accessToken.length);
           console.log('[AUTH DEBUG] refreshToken exists:', !!refreshToken);
           console.log('[AUTH DEBUG] user exists:', !!user);
           console.log('[AUTH DEBUG] isAuthenticated:', true);
+
+
 
           // Refresh complete user profile
           try {
@@ -991,6 +1028,10 @@ export const useAuthStore = create<AuthStore>()(
       setPendingPhone: (phone: string) => {
         const normalizedPhone = phone.replace(/\s+/g, '');
         set({ pendingPhone: normalizedPhone });
+      },
+
+      setPendingEmail: (email: string) => {
+        set({ pendingEmail: email.trim().toLowerCase() });
       },
 
       updateUser: async (updates: any) => {

@@ -16,6 +16,7 @@ export interface CartItem {
   image: string;
   variantId?: string;
   storeId?: string;
+  deliveryCharge?: number;
 }
 
 interface CartState {
@@ -33,6 +34,7 @@ interface CartState {
   removeCoupon: () => void;
   clearCart: () => Promise<{ success: boolean; message?: string }>;
   getCartTotal: () => number;
+  getProductDeliveryCharges: () => number;
   fetchCart: () => Promise<void>;
   /** Call this right after a successful login to sync the server cart to this device. */
   syncCartAfterLogin: () => Promise<void>;
@@ -452,6 +454,13 @@ export const useCartStore = create<CartState>()(
         return get().items.reduce((total, item) => total + item.price * item.quantity, 0);
       },
 
+      getProductDeliveryCharges: () => {
+        return get().items.reduce(
+          (sum, item) => sum + (Number((item as any).deliveryCharge ?? 0) * (item.quantity || 1)),
+          0
+        );
+      },
+
       resetCartState: () => {
         set({
           items: [],
@@ -584,6 +593,11 @@ export const useCartStore = create<CartState>()(
                       item.storeId ||
                       item.store?.id ||
                       undefined,
+                    deliveryCharge: Number(
+                      item.product?.deliveryCharge ??
+                      item.deliveryCharge ??
+                      0
+                    ),
                   };
                 }
               );
@@ -700,6 +714,11 @@ export const useCartStore = create<CartState>()(
                 image,
                 variantId,
                 storeId: resolvedItemStoreId,
+                deliveryCharge: Number(
+                  item.product?.deliveryCharge ??
+                  item.deliveryCharge ??
+                  0
+                ),
               };
             }
           );

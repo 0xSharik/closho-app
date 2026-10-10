@@ -10,6 +10,7 @@ import { useCartStore } from '../src/store/cartStore';
 import { useOrderStore } from '../src/store/orderStore';
 import { useProfileStore } from '../src/store/profileStore';
 import { useStoreStore } from '../src/store/storeStore';
+import { useSettingsStore } from '../src/store/settingsStore';
 import { colors } from '../src/theme/colors';
 import { spacing } from '../src/theme/spacing';
 import { typography } from '../src/theme/typography';
@@ -50,9 +51,12 @@ export default function CheckoutScreen() {
 
   const successScaleAnim = useRef(new Animated.Value(0)).current;
 
-  // --- Price calculations from real cart data ---
+  // --- Price calculations from real cart data & delivery rules ---
   const subtotal = getCartTotal();
-  const shipping = getShippingFee(subtotal);
+  const pastOrdersCount = useOrderStore((state) => state.orders.length);
+  const { calculateDeliveryCharge } = useSettingsStore();
+  const deliveryCalc = calculateDeliveryCharge(items, pastOrdersCount);
+  const shipping = deliveryCalc.totalDeliveryCharge;
   const total = Math.max(0, subtotal - discountAmount + shipping);
   const itemCount = items.reduce((sum, i) => sum + i.quantity, 0);
 
@@ -232,36 +236,24 @@ export default function CheckoutScreen() {
 
       const backendAmount =
         Number(orderData.amount);
+      const backendTotal =
+        Number(orderData.total ?? orderData.order?.total);
 
+      // The backend is the single source of truth for total payable
       const expectedAmountPaise = Math.round(total * 100);
       const amountPaise =
-        Number.isFinite(backendAmount) &&
-          backendAmount > 0
+        Number.isFinite(backendAmount) && backendAmount > 0
           ? Math.round(backendAmount)
-          : expectedAmountPaise;
+          : Number.isFinite(backendTotal) && backendTotal > 0
+            ? Math.round(backendTotal * 100)
+            : expectedAmountPaise;
 
-      // Never silently show one total to the customer and charge another.
-      // If the backend has not yet incorporated deliveryFee, stop before
-      // opening Razorpay rather than charging the wrong amount.
-      if (isRazorpay && Number.isFinite(backendAmount) && backendAmount > 0 && amountPaise !== expectedAmountPaise) {
-        console.error('[Razorpay] Backend amount does not match checkout total.', {
-          backendAmountPaise: amountPaise,
-          expectedAmountPaise,
-          subtotal,
-          discountAmount,
-          deliveryFee: shipping,
-        });
-
-        if (createdOrderId) {
-          await cancelOrder(createdOrderId);
-        }
-
-        showSnackbar(
-          'Payment total is out of sync. Please try again after the order total is recalculated.',
-          'error'
-        );
-        return;
-      }
+      console.log('[Razorpay] Passing authoritative order total to Razorpay:', {
+        amountPaise,
+        backendAmount,
+        backendTotal,
+        expectedAmountPaise,
+      });
 
       if (
         Platform.OS === 'web' ||
@@ -635,9 +627,23 @@ export default function CheckoutScreen() {
               <Text style={styles.summaryLabel}>Subtotal ({itemCount} {itemCount === 1 ? 'item' : 'items'})</Text>
               <Text style={styles.summaryValue}>₹{subtotal.toLocaleString('en-IN')}</Text>
             </View>
+            {deliveryCalc.productCharges > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Product Shipping Fee</Text>
+                <Text style={[styles.summaryValue, deliveryCalc.isFree && { textDecorationLine: 'line-through', color: colors.text.secondary }]}>
+                  ₹{deliveryCalc.productCharges.toLocaleString('en-IN')}
+                </Text>
+              </View>
+            )}
             <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Shipping</Text>
-              <Text style={styles.summaryValue}>₹{shipping.toLocaleString('en-IN')}</Text>
+              <Text style={styles.summaryLabel}>Delivery Charge</Text>
+              {deliveryCalc.isFree ? (
+                <Text style={[styles.summaryValue, { color: colors.status.success, fontWeight: '700' }]}>
+                  FREE
+                </Text>
+              ) : (
+                <Text style={styles.summaryValue}>₹{shipping.toLocaleString('en-IN')}</Text>
+              )}
             </View>
             {discountAmount > 0 && (
               <View style={styles.summaryRow}>

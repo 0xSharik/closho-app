@@ -11,6 +11,8 @@ import { Button } from '../../src/components/ui/Button';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
 import { getShippingFee } from '../../src/constants/commerce';
 import { useCartStore } from '../../src/store/cartStore';
+import { useSettingsStore } from '../../src/store/settingsStore';
+import { useOrderStore } from '../../src/store/orderStore';
 import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
@@ -30,6 +32,8 @@ export default function CartScreen() {
   const [couponCode, setCouponCode] = useState('');
   const [isClearingCart, setIsClearingCart] = useState(false);
   const { showSnackbar } = useSnackbar();
+  const { calculateDeliveryCharge } = useSettingsStore();
+  const pastOrdersCount = useOrderStore((state) => state.orders.length);
 
   // Always sync from server when the cart screen comes into focus.
   // This ensures multi-device cart changes are reflected immediately.
@@ -158,8 +162,8 @@ export default function CartScreen() {
   }
 
   const subtotal = getCartTotal();
-  const shipping = getShippingFee(subtotal);
-  const total = Math.max(0, subtotal - discountAmount + shipping);
+  const deliveryCalc = calculateDeliveryCharge(items, pastOrdersCount);
+  const total = Math.max(0, subtotal - discountAmount + deliveryCalc.totalDeliveryCharge);
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -247,15 +251,41 @@ export default function CartScreen() {
             </TouchableOpacity>
           </View>
 
+          {/* Promotional / First Order Free Delivery Banner */}
+          {deliveryCalc.isFree && deliveryCalc.reason && (
+            <View style={styles.promoBanner}>
+              <Ionicons name="sparkles" size={18} color={colors.status.success} />
+              <Text style={styles.promoBannerText}>
+                {deliveryCalc.reason === 'promotional'
+                  ? 'Promotional Free Delivery Weekend Active!'
+                  : 'Free delivery applied on your first order!'}
+              </Text>
+            </View>
+          )}
+
           {/* Summary */}
           <View style={styles.summaryContainer}>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Subtotal</Text>
               <Text style={styles.summaryValue}>₹{subtotal.toFixed(2)}</Text>
             </View>
+            {deliveryCalc.productCharges > 0 && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Product Shipping Fee</Text>
+                <Text style={[styles.summaryValue, deliveryCalc.isFree && { textDecorationLine: 'line-through', color: colors.text.secondary }]}>
+                  ₹{deliveryCalc.productCharges.toFixed(2)}
+                </Text>
+              </View>
+            )}
             <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Shipping</Text>
-              <Text style={styles.summaryValue}>₹{shipping.toFixed(2)}</Text>
+              <Text style={styles.summaryLabel}>Delivery Charge</Text>
+              {deliveryCalc.isFree ? (
+                <Text style={[styles.summaryValue, { color: colors.status.success, fontWeight: '700' }]}>
+                  FREE
+                </Text>
+              ) : (
+                <Text style={styles.summaryValue}>₹{deliveryCalc.totalDeliveryCharge.toFixed(2)}</Text>
+              )}
             </View>
             {discountAmount > 0 && (
               <View style={styles.summaryRow}>
@@ -514,5 +544,23 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.12,
     shadowRadius: 8,
     elevation: 12,
+  },
+  promoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.status.success + '18',
+    borderColor: colors.status.success + '40',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+  },
+  promoBannerText: {
+    color: colors.status.success,
+    fontSize: typography.fontSize.sm,
+    fontWeight: '700',
+    flex: 1,
   },
 });

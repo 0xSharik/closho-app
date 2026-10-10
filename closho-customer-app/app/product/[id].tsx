@@ -72,6 +72,7 @@ export default function ProductDetailsScreen() {
             stock: p.variants?.[0]?.stock || 0,
             // storeId from the product itself — AUTHORITATIVE for cart operations
             storeId: p.store?.id || currentStore?.id || null,
+            deliveryCharge: Number(p.deliveryCharge || 0),
             colors: p.variants
               ? Array.from(new Set(p.variants.map((v: any) => v.color))).map((c: any) => ({
                   id: c,
@@ -152,6 +153,7 @@ export default function ProductDetailsScreen() {
       quantity: 1,
       image: product.imageUrl || '',
       storeId: product.storeId, // product's own storeId — avoids stale global store
+      deliveryCharge: Number(product.deliveryCharge || 0),
     };
     if (matchingVariant?.id) cartItem.variantId = matchingVariant.id;
     console.log('[PRODUCT] Cart item built:', JSON.stringify(cartItem, null, 2));
@@ -283,6 +285,20 @@ export default function ProductDetailsScreen() {
               <Text style={styles.discountText}>-{product.discount}%</Text>
             </View>
           ) : null}
+
+          {/* Delivery Information */}
+          <View style={styles.deliveryInfoCard}>
+            <Ionicons
+              name={product.deliveryCharge > 0 ? 'cube-outline' : 'checkmark-circle-outline'}
+              size={18}
+              color={product.deliveryCharge > 0 ? colors.text.secondary : colors.status.success}
+            />
+            <Text style={[styles.deliveryInfoText, product.deliveryCharge === 0 && styles.deliveryInfoFree]}>
+              {product.deliveryCharge > 0
+                ? `Delivery Fee: ₹${product.deliveryCharge.toFixed(2)}`
+                : 'Free Delivery for this item'}
+            </Text>
+          </View>
 
           {/* Color Selector */}
           <View style={styles.section}>
@@ -537,6 +553,26 @@ const styles = StyleSheet.create({
     color: colors.text.inverse,
     fontSize: typography.fontSize.xs,
     fontWeight: 'bold',
+  },
+  deliveryInfoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceLight,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 8,
+    marginBottom: spacing.xl,
+    alignSelf: 'flex-start',
+    gap: spacing.xs,
+  },
+  deliveryInfoText: {
+    fontSize: typography.fontSize.sm,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  deliveryInfoFree: {
+    color: colors.status.success,
+    fontWeight: '700',
   },
   section: {
     marginBottom: spacing.xxl,

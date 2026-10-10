@@ -18,6 +18,7 @@ export interface Product {
   category?: string;
   imageUrl: string;
   isWishlisted?: boolean;
+  deliveryCharge?: number;
 }
 
 interface ProductCardProps {

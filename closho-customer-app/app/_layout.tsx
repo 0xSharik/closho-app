@@ -3,7 +3,9 @@ import { useEffect } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SnackbarProvider } from '../src/components/ui/SnackbarContext';
 import { useAuthStore } from '../src/store/authStore';
+import { useSettingsStore } from '../src/store/settingsStore';
 import { AppErrorBoundary } from '../src/components/AppErrorBoundary';
+import { isJwtExpired, refreshAccessToken } from '../src/services/api';
 
 function ScreenErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return (
@@ -54,6 +56,9 @@ export default function RootLayout() {
     currentRoute === 'splash';
 
   useEffect(() => {
+    // Load platform delivery rules & configuration on app startup
+    useSettingsStore.getState().fetchConfig();
+
     if (Platform.OS !== 'web' || typeof window === 'undefined') {
       return;
     }
@@ -66,6 +71,16 @@ export default function RootLayout() {
     window.addEventListener('unhandledrejection', handleUnhandledRejection);
     return () => window.removeEventListener('unhandledrejection', handleUnhandledRejection);
   }, []);
+
+  useEffect(() => {
+    if (hasHydrated && isAuthenticated) {
+      const { token, refreshToken } = useAuthStore.getState();
+      if (token && refreshToken && isJwtExpired(token, 120)) {
+        console.log('[RootLayout] Restored token is expired/expiring soon. Proactively refreshing...');
+        void refreshAccessToken();
+      }
+    }
+  }, [hasHydrated, isAuthenticated]);
 
   useEffect(() => {
     console.log('[AUTH GUARD DEBUG]', {

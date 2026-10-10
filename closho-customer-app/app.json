@@ -13,6 +13,7 @@
     },
     "android": {
       "package": "com.closho.customerapp",
+      "versionCode": 2,
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -52,7 +53,7 @@
       "typedRoutes": true
     },
     "updates": {
-      "url": "https://u.expo.dev/ba12a1fb-1eae-4c46-bd89-d14440f7fb3f"
+      "url": "https://u.expo.dev/3b4062f5-3df1-41c3-9884-7c40f7679e83"
     },
     "runtimeVersion": {
       "policy": "appVersion"

@@ -1,10 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import { zodResolver } from '@hookform/resolvers/zod';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Controller, useForm } from 'react-hook-form';
 import { Animated, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { z } from 'zod';
 import { Button } from '../../src/components/ui/Button';
 import { Input } from '../../src/components/ui/Input';
 import { useSnackbar } from '../../src/components/ui/SnackbarContext';
@@ -13,33 +10,18 @@ import { colors } from '../../src/theme/colors';
 import { spacing } from '../../src/theme/spacing';
 import { typography } from '../../src/theme/typography';
 import { friendlyError } from '../../src/utils/friendlyError';
-import { logUserActionFailure, logUserEvent, logValidationFailure } from '../../src/utils/userEventLogger';
-
-
-const loginSchema = z.object({
-  emailOrPhone: z.string().min(3, 'Please enter a valid email or phone number'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
-});
-
-type LoginForm = z.infer<typeof loginSchema>;
-
-type AuthControllerField = {
-  onChange: (value: string) => void;
-  onBlur: () => void;
-  value: string;
-};
+import { logUserActionFailure, logUserEvent } from '../../src/utils/userEventLogger';
 
 export default function LoginScreen() {
   const router = useRouter();
   const { showSnackbar } = useSnackbar();
   const [isLoading, setIsLoading] = useState(false);
-  const [loginMethod, setLoginMethod] = useState<'mobile' | 'email'>('email');
 
-  // Mobile OTP state
-  const [phone, setPhone] = useState('');
+  // Single identifier for phone or email
+  const [identifier, setIdentifier] = useState('');
   const [otp, setOtp] = useState('');
   const [isOtpSent, setIsOtpSent] = useState(false);
-  const [phoneNotFound, setPhoneNotFound] = useState(false);
+  const [userNotFound, setUserNotFound] = useState(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
@@ -51,67 +33,62 @@ export default function LoginScreen() {
     ]).start();
   }, []);
 
-  const { control, handleSubmit, formState: { errors } } = useForm<LoginForm>({
-    resolver: zodResolver(loginSchema),
-    defaultValues: {
-      emailOrPhone: '',
-      password: '',
-    },
-  });
-
-  const onSubmitEmail = async (data: LoginForm) => {
-    logUserEvent('auth.login_submitted', { method: 'password' });
-    setIsLoading(true);
-    const result = await useAuthStore.getState().login(data.emailOrPhone, data.password);
-    setIsLoading(false);
-
-    if (result.success) {
-      logUserEvent('auth.login_succeeded', { method: 'password' });
-      showSnackbar('Successfully logged in!', 'success');
-    } else {
-      const reason = /invalid|wrong|credential|unauthorized/i.test(result.error || '')
-        ? 'invalid_credentials'
-        : 'rejected';
-      logUserEvent('auth.login_failed', { method: 'password', reason });
-      showSnackbar(friendlyError(result.error, 'The email or password you entered is incorrect.'), 'error');
-    }
-  };
-
   const handleSendOtp = async () => {
-    if (phone.length < 10) {
-      logValidationFailure('auth.otp_login', ['phone']);
-      showSnackbar('Please enter a valid 10-digit phone number', 'error');
+    const trimmed = identifier.trim();
+    if (!trimmed) {
+      showSnackbar('Please enter your mobile number or email', 'error');
       return;
     }
-    setPhoneNotFound(false);
+
+    const isEmail = trimmed.includes('@');
+    if (isEmail) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(trimmed)) {
+        showSnackbar('Please enter a valid email address', 'error');
+        return;
+      }
+    } else {
+      const cleanPhone = trimmed.replace(/\D/g, '');
+      if (cleanPhone.length < 10) {
+        showSnackbar('Please enter a valid 10-digit phone number', 'error');
+        return;
+      }
+    }
+
+    setUserNotFound(false);
     setIsLoading(true);
-    const result = await useAuthStore.getState().sendOtp(phone);
+    const result = await useAuthStore.getState().sendOtp(trimmed);
     setIsLoading(false);
 
     if (result.success) {
-      logUserEvent('auth.otp_sent', { flow: 'login' });
+      logUserEvent('auth.otp_sent', { flow: 'login', channel: isEmail ? 'email' : 'phone' });
       setIsOtpSent(true);
-      showSnackbar('OTP sent successfully!', 'success');
+      showSnackbar(`OTP sent successfully to your ${isEmail ? 'email' : 'phone'}!`, 'success');
     } else if (result.errorCode === 'USER_NOT_FOUND') {
       logUserEvent('auth.otp_send_failed', { reason: 'user_not_found' });
-      setPhoneNotFound(true);
-      useAuthStore.getState().setPendingPhone(phone);
+      setUserNotFound(true);
+      if (isEmail) {
+        useAuthStore.getState().setPendingEmail(trimmed);
+      } else {
+        useAuthStore.getState().setPendingPhone(trimmed.replace(/\D/g, ''));
+      }
       logUserEvent('auth.registration_suggested', { reason: 'user_not_found' });
     } else {
       logUserEvent('auth.otp_send_failed', { reason: 'rejected' });
       showSnackbar(friendlyError(result.error, 'We could not send a code. Please try again.'), 'error');
     }
   };
+
   const handleVerifyOtp = async () => {
-    if (!phone || otp.length !== 6) {
-      showSnackbar('Please enter the 6-digit OTP', 'error');
+    const trimmed = identifier.trim();
+    if (!trimmed || otp.length < 4) {
+      showSnackbar('Please enter the OTP', 'error');
       return;
     }
 
-    const result =
-      await useAuthStore
-        .getState()
-        .verifyOtp(phone, otp);
+    setIsLoading(true);
+    const result = await useAuthStore.getState().verifyOtp(trimmed, otp);
+    setIsLoading(false);
 
     if (!result.success) {
       showSnackbar(
@@ -121,8 +98,7 @@ export default function LoginScreen() {
       return;
     }
 
-    const authState =
-      useAuthStore.getState();
+    const authState = useAuthStore.getState();
 
     if (
       authState.isAuthenticated &&
@@ -138,7 +114,7 @@ export default function LoginScreen() {
         'success'
       );
 
-      router.replace('/(tabs)/reels');
+      router.replace('/(tabs)');
     }
   };
 
@@ -258,16 +234,16 @@ export default function LoginScreen() {
       console.log('[GoogleSignIn] Error code:', error?.code);
       console.log('[GoogleSignIn] Error response:', error?.response?.data);
 
-      if (error.code === statusCodes.SIGN_IN_CANCELLED) {
+      if (error.code === statusCodes?.SIGN_IN_CANCELLED) {
         console.log('[GoogleSignIn] User cancelled');
-      } else if (error.code === statusCodes.IN_PROGRESS) {
+      } else if (error.code === statusCodes?.IN_PROGRESS) {
         console.log('[GoogleSignIn] Sign in already in progress');
 
         showSnackbar(
           'Google Sign In is already in progress.',
           'info'
         );
-      } else if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+      } else if (error.code === statusCodes?.PLAY_SERVICES_NOT_AVAILABLE) {
         console.log('[GoogleSignIn] Play Services unavailable');
 
         showSnackbar(
@@ -296,131 +272,86 @@ export default function LoginScreen() {
         <Animated.View style={[styles.header, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
           <Text style={styles.logoText}>CLOSHO</Text>
           <Text style={styles.title}>Welcome Back</Text>
-          <Text style={styles.subtitle}>Login to your account to continue</Text>
+          <Text style={styles.subtitle}>Login with OTP using your mobile number or email</Text>
         </Animated.View>
 
         <Animated.View style={[styles.form, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          <View>
+            <Input
+              label="Mobile Number or Email"
+              placeholder="Enter 10-digit mobile or email address"
+              autoCapitalize="none"
+              keyboardType="email-address"
+              value={identifier}
+              onChangeText={(text) => {
+                setIdentifier(text);
+                if (userNotFound) setUserNotFound(false);
+              }}
+              editable={!isOtpSent}
+            />
 
-          {/* Tabs */}
-          <View style={styles.tabContainer}>
-            <TouchableOpacity
-              style={[styles.tab, loginMethod === 'email' && styles.activeTab]}
-              onPress={() => setLoginMethod('email')}
-            >
-              <Text style={[styles.tabText, loginMethod === 'email' && styles.activeTabText]}>Email / Mobile</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.tab, loginMethod === 'mobile' && styles.activeTab]}
-              onPress={() => setLoginMethod('mobile')}
-            >
-              <Text style={[styles.tabText, loginMethod === 'mobile' && styles.activeTabText]}>Phone</Text>
-            </TouchableOpacity>
-          </View>
-
-          {loginMethod === 'email' ? (
-            <View>
-              <Controller
-                control={control}
-                name="emailOrPhone"
-                render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
-                  <Input label="Email or Mobile" placeholder="Enter email or mobile" autoCapitalize="none" onBlur={onBlur} onChangeText={onChange} value={value} error={errors.emailOrPhone?.message} />
-                )}
-              />
-
-              <Controller
-                control={control}
-                name="password"
-                render={({ field: { onChange, onBlur, value } }: { field: AuthControllerField }) => (
-                  <Input label="Password" placeholder="Enter your password" isPassword onBlur={onBlur} onChangeText={onChange} value={value} error={errors.password?.message} />
-                )}
-              />
-
-              <View style={styles.forgotPasswordContainer}>
-                <Button
-                  variant="text"
-                  title="Forgot Password?"
-                  style={{ height: 'auto', paddingHorizontal: 0 }}
-                  onPress={() => router.push('/(auth)/forgot-password')}
-                />
-              </View>
-
-              <Button
-                title={isLoading ? "Signing in..." : "Sign In"}
-                onPress={handleSubmit(onSubmitEmail, (formErrors) => logValidationFailure('auth.login', Object.keys(formErrors)))}
-                disabled={isLoading}
-              />
-            </View>
-          ) : (
-            <View>
+            {isOtpSent && (
               <Input
-                label="Mobile Number"
-                placeholder="Enter 10-digit number"
-                keyboardType="phone-pad"
-                value={phone}
-                onChangeText={setPhone}
-                editable={!isOtpSent}
+                label="Verification Code (OTP)"
+                placeholder="Enter 6-digit OTP"
+                keyboardType="number-pad"
+                value={otp}
+                onChangeText={setOtp}
+                maxLength={6}
               />
+            )}
 
-              {isOtpSent && (
-                <Input
-                  label="OTP"
-                  placeholder="Enter 6-digit OTP"
-                  keyboardType="number-pad"
-                  value={otp}
-                  onChangeText={setOtp}
+            {!isOtpSent ? (
+              <>
+                <Button
+                  title={isLoading ? "Sending..." : "Send OTP"}
+                  onPress={handleSendOtp}
+                  disabled={isLoading || identifier.trim().length === 0}
                 />
-              )}
-
-              {!isOtpSent ? (
-                <>
-                  <Button
-                    title={isLoading ? "Sending..." : "Send OTP"}
-                    onPress={handleSendOtp}
-                    disabled={isLoading || phone.length < 10}
-                  />
-                  {phoneNotFound && (
-                    <View style={styles.notFoundBox}>
-                      <Ionicons name="alert-circle-outline" size={20} color={colors.status?.error || '#FF4444'} />
-                      <View style={{ flex: 1, marginLeft: 8 }}>
-                        <Text style={styles.notFoundTitle}>Number not registered</Text>
-                        <Text style={styles.notFoundSub}>This mobile number doesn't exist in our system.</Text>
-                      </View>
+                {userNotFound && (
+                  <View style={styles.notFoundBox}>
+                    <Ionicons name="alert-circle-outline" size={20} color={colors.status?.error || '#FF4444'} />
+                    <View style={{ flex: 1, marginLeft: 8 }}>
+                      <Text style={styles.notFoundTitle}>Account not registered</Text>
+                      <Text style={styles.notFoundSub}>This mobile number or email doesn't exist in our system.</Text>
                     </View>
-                  )}
-                  {phoneNotFound && (
-                    <Button
-                      title="Create Account"
-                      variant="outline"
-                      style={{ marginTop: 8 }}
-                      onPress={() =>
-                        router.push({
-                          pathname: '/(auth)/register',
-                          params: { phone },
-                        })
-                      }
-                    />
-                  )}
-                </>
-              ) : (
+                  </View>
+                )}
+                {userNotFound && (
+                  <Button
+                    title="Create Account"
+                    variant="outline"
+                    style={{ marginTop: 8 }}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/(auth)/register',
+                        params: identifier.includes('@')
+                          ? { email: identifier.trim() }
+                          : { phone: identifier.replace(/\D/g, '') },
+                      })
+                    }
+                  />
+                )}
+              </>
+            ) : (
+              <>
                 <Button
                   title={isLoading ? "Verifying..." : "Verify OTP"}
                   onPress={handleVerifyOtp}
-                  disabled={isLoading || otp.length !== 6}
+                  disabled={isLoading || otp.length < 4}
                 />
-              )}
 
-              {isOtpSent && (
                 <View style={styles.forgotPasswordContainer}>
                   <Button
                     variant="text"
-                    title="Change Number"
+                    title="Change Number or Email"
                     style={{ height: 'auto', paddingHorizontal: 0, marginTop: 10 }}
                     onPress={() => { setIsOtpSent(false); setOtp(''); }}
                   />
                 </View>
-              )}
-            </View>
-          )}
+              </>
+            )}
+          </View>
 
           <View style={styles.dividerContainer}>
             <View style={styles.divider} />

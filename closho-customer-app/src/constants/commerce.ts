@@ -1,7 +1,16 @@
-/**
- * Keep the fee displayed before and during checkout in one place. The order
- * API remains authoritative when it returns its final order totals.
- */
-export const SHIPPING_FEE = 99;
+import { useSettingsStore } from '../store/settingsStore';
+import { CartItem } from '../store/cartStore';
 
-export const getShippingFee = (subtotal: number) => (subtotal > 0 ? SHIPPING_FEE : 0);
+/**
+ * Default fallback fee when settings are not loaded.
+ * Real fees and rules are fetched from GET /settings/config.
+ */
+export const DEFAULT_SHIPPING_FEE = 0;
+
+export const getShippingFee = (
+  items: CartItem[] = [],
+  pastOrdersCount: number = 0
+): number => {
+  const calculation = useSettingsStore.getState().calculateDeliveryCharge(items, pastOrdersCount);
+  return calculation.totalDeliveryCharge;
+};

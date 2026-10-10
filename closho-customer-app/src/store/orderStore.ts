@@ -29,6 +29,7 @@ export interface Order {
   subtotal?: number;
   discountAmount?: number;
   shippingAmount?: number;
+  deliveryCharge?: number;
   trackingNumber?: string;
   paymentMethod?: string;
   paymentStatus?: string;
@@ -456,14 +457,27 @@ export const useOrderStore = create<OrderState>()(
                     0
                   ),
 
+                  deliveryCharge:
+                    o.deliveryCharge != null
+                      ? Number(o.deliveryCharge)
+                      : o.shippingAmount != null
+                        ? Number(o.shippingAmount)
+                        : o.shippingFee != null
+                          ? Number(o.shippingFee)
+                          : o.deliveryFee != null
+                            ? Number(o.deliveryFee)
+                            : 0,
+
                   shippingAmount:
-                    o.shippingAmount != null
-                      ? Number(o.shippingAmount)
-                      : o.shippingFee != null
-                        ? Number(o.shippingFee)
-                        : o.deliveryFee != null
-                          ? Number(o.deliveryFee)
-                          : undefined,
+                    o.deliveryCharge != null
+                      ? Number(o.deliveryCharge)
+                      : o.shippingAmount != null
+                        ? Number(o.shippingAmount)
+                        : o.shippingFee != null
+                          ? Number(o.shippingFee)
+                          : o.deliveryFee != null
+                            ? Number(o.deliveryFee)
+                            : undefined,
 
                   paymentMethod:
                     o.paymentMethod ||

@@ -19,6 +19,7 @@ import { useAuthStore } from '../../src/store/authStore';
 import { useProfileStore } from '../../src/store/profileStore';
 import { useReelsStore } from '../../src/store/reelsStore';
 import { useStoreStore } from '../../src/store/storeStore';
+import { useSettingsStore } from '../../src/store/settingsStore';
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
@@ -28,6 +29,7 @@ export default function HomeScreen() {
   const { addresses, fetchAddresses, setDefaultAddress } = useProfileStore();
   const { user } = useAuthStore();
   const { showSnackbar } = useSnackbar();
+  const { freeDeliveryPromotional, freeDeliveryFirstUser } = useSettingsStore();
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -58,58 +60,115 @@ export default function HomeScreen() {
     fetchReels();
 
     const initLocationAndStores = async () => {
-      if (currentStore) return;
-
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
-          console.log('Location permission denied, fetching default stores');
-          await fetchNearestStore(19.1197, 72.8468, 99999, false);
+          console.log('Location permission denied, keeping current/fallback store');
+          if (!currentStore) {
+            await fetchNearestStore(19.1197, 72.8468, 99999, true);
+          }
           return;
+        }
+
+        if (Platform.OS === 'android') {
+          await Location.enableNetworkProviderAsync().catch(() => undefined);
         }
 
         const lastKnown = await Location.getLastKnownPositionAsync({
           maxAge: 60_000,
-          requiredAccuracy: 100,
+          requiredAccuracy: 50,
         });
         if (lastKnown) {
           void resolveLocationLabel(lastKnown.coords.latitude, lastKnown.coords.longitude);
-          void fetchNearestStore(lastKnown.coords.latitude, lastKnown.coords.longitude, 15);
+          void fetchNearestStore(lastKnown.coords.latitude, lastKnown.coords.longitude, 50, true);
         }
 
         const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
+          accuracy: Location.Accuracy.Highest,
           mayShowUserSettingsDialog: true,
         });
         void resolveLocationLabel(location.coords.latitude, location.coords.longitude);
-        await fetchNearestStore(location.coords.latitude, location.coords.longitude, 15);
+        await fetchNearestStore(location.coords.latitude, location.coords.longitude, 50, true);
       } catch (error) {
-        console.warn('Error getting location', error);
-        await fetchNearestStore(19.1197, 72.8468, 99999);
+        console.warn('Error getting location or nearest store', error);
+        if (!currentStore) {
+          await fetchNearestStore(19.1197, 72.8468, 99999, true);
+        }
       }
     };
     initLocationAndStores();
   }, []);
 
   /**
+   * Formats a precise, granular delivery location label from reverse-geocoded coordinates.
+   * Discards broad administrative divisions (e.g. "Ropar Division", "Patiala Division").
+   * Prioritizes: Sublocality / Sector / Colony / Street / Landmark + City / District.
+   */
+  const formatPreciseLocation = (r: Location.LocationGeocodedAddress): string => {
+    const isUnwanted = (str?: string | null): boolean => {
+      if (!str || typeof str !== 'string') return true;
+      const s = str.trim();
+      if (!s) return true;
+      if (/division/i.test(s)) return true;
+      if (/unnamed/i.test(s)) return true;
+      return false;
+    };
+
+    const clean = (str?: string | null): string | null => {
+      return !isUnwanted(str) ? str!.trim() : null;
+    };
+
+    const name = clean(r.name);
+    const street = clean(r.street);
+    const sublocality = clean(r.sublocality);
+    const district = clean(r.district);
+    const city = clean(r.city);
+    const postalCode = clean(r.postalCode);
+
+    // Reject pure numbers or plus codes for the landmark name
+    const isNamedLandmark = name && !/^\d+$/.test(name) && !name.includes('+');
+
+    // Highly granular local area: neighborhood, sector, street, or landmark
+    const localPart = sublocality || street || (isNamedLandmark ? name : null);
+
+    // Municipality / Town / City
+    const townPart = city || district;
+
+    if (localPart && townPart) {
+      if (localPart.toLowerCase().includes(townPart.toLowerCase())) {
+        return localPart;
+      }
+      if (townPart.toLowerCase().includes(localPart.toLowerCase())) {
+        return townPart;
+      }
+      return `${localPart}, ${townPart}`;
+    }
+
+    if (localPart) {
+      return localPart;
+    }
+
+    if (townPart) {
+      return townPart;
+    }
+
+    const region = clean(r.region);
+    if (district) return district;
+    if (region) return postalCode ? `${region} ${postalCode}` : region;
+
+    return 'Current Location';
+  };
+
+  /**
    * Reverse-geocodes lat/lng and updates the header location label.
-   * Priority: sublocality (neighbourhood) → district → city → region
    */
   const resolveLocationLabel = async (lat: number, lng: number) => {
     try {
       setIsResolvingLocation(true);
       const results = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
       if (results && results.length > 0) {
-        const r = results[0];
-        // Build a concise label: prefer subregion/district over full city
-        const label =
-          r.subregion ||
-          r.district ||
-          r.sublocality ||
-          r.name ||
-          r.city ||
-          r.region ||
-          'Current Location';
+        const label = formatPreciseLocation(results[0]);
+        console.log('[Location] Resolved precise location label:', label, 'coords:', { lat, lng });
         setGpsLocationLabel(label);
       }
     } catch (err) {
@@ -131,10 +190,11 @@ export default function HomeScreen() {
         await Location.enableNetworkProviderAsync().catch(() => undefined);
       }
       const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
+        accuracy: Location.Accuracy.Highest,
         mayShowUserSettingsDialog: true,
       });
       await resolveLocationLabel(location.coords.latitude, location.coords.longitude);
+      await fetchNearestStore(location.coords.latitude, location.coords.longitude, 50, true);
       showSnackbar('Location updated.', 'success');
       setIsAddressModalVisible(false);
     } catch (err) {
@@ -161,12 +221,12 @@ export default function HomeScreen() {
       }
 
       const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
+        accuracy: Location.Accuracy.Highest,
         mayShowUserSettingsDialog: true,
       });
       // Also update header label when re-selecting location from store modal
       resolveLocationLabel(location.coords.latitude, location.coords.longitude);
-      await fetchNearestStore(location.coords.latitude, location.coords.longitude, 15, true);
+      await fetchNearestStore(location.coords.latitude, location.coords.longitude, 50, true);
       setIsStoreModalVisible(false);
       showSnackbar('Nearest store selected.', 'success');
     } catch (error) {
@@ -183,9 +243,28 @@ export default function HomeScreen() {
       showSnackbar('Could not select that delivery address. Please try again.', 'error');
       return;
     }
+    const selected = addresses.find(a => a.id === addressId);
+    if (selected) {
+      const label = selected.addressLine1
+        ? `${selected.addressLine1}${selected.city ? `, ${selected.city}` : ''}`
+        : selected.city || 'Delivery Address';
+      setGpsLocationLabel(label);
+    }
     setIsAddressModalVisible(false);
     showSnackbar('Delivery address selected.', 'success');
   };
+
+  useEffect(() => {
+    if (addresses.length > 0 && !gpsLocationLabel) {
+      const def = addresses.find(a => a.isDefault) || addresses[0];
+      if (def) {
+        const label = def.addressLine1
+          ? `${def.addressLine1}${def.city ? `, ${def.city}` : ''}`
+          : def.city || null;
+        if (label) setGpsLocationLabel(label);
+      }
+    }
+  }, [addresses]);
 
   // Fetch products + addresses when store changes (guarded to prevent double-fire on startup)
   const prevStoreIdRef = React.useRef<string | null | undefined>(undefined);
@@ -305,6 +384,23 @@ export default function HomeScreen() {
             <Ionicons name="chevron-down" size={12} color={colors.text.tertiary} style={{ marginLeft: 4 }} />
           </TouchableOpacity>
         </Animated.View>
+
+        {/* ── PROMOTIONAL DELIVERY BANNER ── */}
+        {(freeDeliveryPromotional || freeDeliveryFirstUser) && (
+          <TouchableOpacity
+            style={styles.globalPromoBanner}
+            activeOpacity={0.85}
+            onPress={() => router.push('/(tabs)/cart')}
+          >
+            <Ionicons name="sparkles" size={16} color={colors.primary} />
+            <Text style={styles.globalPromoBannerText}>
+              {freeDeliveryPromotional
+                ? 'Promotional Free Delivery Weekend on All Orders!'
+                : 'Free Delivery on Your Very First Order!'}
+            </Text>
+            <Ionicons name="arrow-forward" size={14} color={colors.primary} />
+          </TouchableOpacity>
+        )}
 
         {/* ── SEARCH BAR ── */}
         <TouchableOpacity
@@ -862,5 +958,23 @@ const styles = StyleSheet.create({
   gridItem: {
     width: '48%',
     marginBottom: spacing.lg,
-  }
+  },
+  globalPromoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceLight,
+    borderColor: colors.primary + '40',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+  },
+  globalPromoBannerText: {
+    color: colors.text.primary,
+    fontSize: typography.fontSize.sm,
+    fontWeight: '700',
+    flex: 1,
+  },
 });
